@@ -99,6 +99,7 @@ export function ChatRoom({
 
       const wsUrl = getWsUrl(sessionId, token);
       console.log("WS:", wsUrl.replace(token, "HIDDEN"));
+
       const websocket = new WebSocket(wsUrl);
 
 

@@ -41,3 +41,4 @@ export const getWsUrl = (sessionId: string, token: string): string => {
   return `${WS_URL}${API_ENDPOINTS.chatWs}/${sessionId}?token=${token}`;
 };
 
+

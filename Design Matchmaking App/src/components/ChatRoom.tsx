@@ -121,7 +121,8 @@ export function ChatRoom({
       websocket.onmessage = (event) => {
         const data = JSON.parse(event.data);
         console.log('[WS MESSAGE]', data);
-        handleWebSocketMessage(data);
+        // async function, lekin await qilmasak ham bo‘ladi
+        void handleWebSocketMessage(data);
       };
 
       websocket.onerror = (error: any) => {
@@ -212,12 +213,21 @@ export function ChatRoom({
 
       // Backend → client WebRTC signaling wrapper
       case 'webrtc_signal':
-        handleWebRTCSignal(data);
+        await handleWebRTCSignal(data);
         break;
 
-      case 'user_connected':
+      case 'user_connected': {
         console.log('[WS] User connected:', data.user_id);
+
+        // Eʼtibor: bu eventni faqat opponent emas, balki backend hozir
+        // hozirgi kod bo‘yicha faqat BIR tomonga (odam1ga) yuboryapti.
+        // Shuning uchun shu tomonda – agar caller bo‘lsak – shu paytda OFFER yuboramiz.
+        if (roleRef.current === 'caller' && peerConnectionRef.current) {
+          console.log('[RTC] Peer joined, sending initial offer...');
+          await createAndSendOffer(peerConnectionRef.current);
+        }
         break;
+      }
 
       case 'user_disconnected':
         console.log('[WS] User disconnected:', data.user_id);
@@ -292,20 +302,10 @@ export function ChatRoom({
 
     peerConnectionRef.current = pc;
 
-    // Decide caller:
-    // 1) Prefer backend role
-    // 2) Fallback: deterministic by user id
-    const isCaller =
-      roleRef.current != null
-        ? roleRef.current === 'caller'
-        : currentUser.id < matchUser.id;
-
-    if (isCaller) {
-      console.log('[RTC] I am CALLER — creating offer...');
-      createAndSendOffer(pc);
-    } else {
-      console.log('[RTC] I am CALLEE — waiting for offer...');
-    }
+    // DIQQAT:
+    // Endi bu yerda offer YARATMAYMIZ.
+    // Offer faqat caller uchun "user_connected" event kelganda yuboriladi.
+    console.log('[RTC] PeerConnection ready, waiting for peer to join...');
   };
 
   const createAndSendOffer = async (pc: RTCPeerConnection) => {

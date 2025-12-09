@@ -646,6 +646,18 @@ export function ChatRoom({
       alert('Failed to block user');
     }
   };
+  function getAspectMode() {
+  const ratio = window.innerWidth / window.innerHeight;
+  return ratio < 1 ? "tall" : "wide";
+}
+
+const [aspectMode, setAspectMode] = useState(getAspectMode());
+
+useEffect(() => {
+  const handler = () => setAspectMode(getAspectMode());
+  window.addEventListener("resize", handler);
+  return () => window.removeEventListener("resize", handler);
+}, []);
 
   const cleanup = () => {
     console.log('[CLEANUP] Closing WS, PC, and media tracks');
@@ -778,30 +790,64 @@ export function ChatRoom({
       )}
 
       {/* Video Area */}
-      <div className="flex-1 relative overflow-hidden">
-        {/* Remote Video */}
+<div
+  className="flex-grow relative overflow-hidden"
+  style={{ height: "calc(80vh - 30px)" }}
+>
+
+  {aspectMode === "wide" ? (
+    /* === 16:9 — YONMA-YON === */
+    <div className="flex w-full h-full">
+
+      {/* Remote */}
+      <div className="w-full h-full bg-black">
         <video
           ref={remoteVideoRef}
           autoPlay
           playsInline
-          className="absolute inset-0 w-full h-full object-cover bg-gray-800"
+          className="w-full h-full object-cover"
         />
+      </div>
 
-        {/* Local Video */}
-        <div className="absolute top-4 right-4 w-64 h-48 bg-gray-800 rounded-xl overflow-hidden shadow-2xl border-2 border-gray-700">
-          <video
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full h-full object-cover mirror"
-          />
-          {!videoEnabled && (
-            <div className="absolute inset-0 bg-gray-900 flex items-center justify-center">
-              <VideoOff className="w-12 h-12 text-gray-500" />
-            </div>
-          )}
-        </div>
+      {/* Local */}
+      <div className="w-full h-1/2 bg-black absolute top-4 right-4 border-4 border-gray-800 rounded-lg overflow-hidden shadow-lg" style={{ width: '30%', height: '30%' }}>
+        <video
+          ref={localVideoRef}
+          autoPlay
+          playsInline
+          muted
+          className="w-full h-full object-cover mirror"
+        />
+      </div>
+
+    </div>
+  ) : (
+    /* === 9:16 — VERTIKAL === */
+    <div className="flex flex-col w-full h-full">
+
+  {/* REMOTE — 60% HEIGHT */}
+  <div className="h-1/2 w-full bg-black">
+    <video
+      ref={remoteVideoRef}
+      autoPlay
+      playsInline
+      className="w-1/2 h-full object-cover"
+    />
+  </div>
+
+  {/* LOCAL — 40% HEIGHT */}
+  <div className="h-40 w-full bg-black">
+    <video
+      ref={localVideoRef}
+      autoPlay
+      playsInline
+      muted
+      className="w-full h-full object-cover mirror"
+    />
+  </div>
+
+</div>
+  )}
 
         {/* Controls */}
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-4">

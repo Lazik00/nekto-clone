@@ -67,6 +67,9 @@ export function ChatRoom({
   const remoteDescriptionSetRef = useRef(false);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
 
+  // Dynamic quality monitor timer
+  const qualityMonitorRef = useRef<number | null>(null);
+
   useEffect(() => {
     initializeMediaAndWebSocket();
 
@@ -88,11 +91,12 @@ export function ChatRoom({
         );
       }
 
-      // 1) Get camera + mic
+      // 1) Get camera + mic (adaptive, 320–1080, 30–60 fps)
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
+          width: { min: 320, ideal: 1280, max: 1920 },
+          height: { min: 240, ideal: 720, max: 1080 },
+          frameRate: { ideal: 30, max: 60 },
           facingMode: 'user',
         },
         audio: {
@@ -191,6 +195,7 @@ export function ChatRoom({
         }
         break;
       }
+
       case 'waiting_for_peer':
         console.log('[RTC] Waiting for peer to connect...');
         break;
@@ -302,6 +307,9 @@ export function ChatRoom({
 
     peerConnectionRef.current = pc;
 
+    // Dynamic quality monitor
+    startDynamicQualityMonitor(pc);
+
     // Offer bu yerda YARATILMAYDI.
     // Caller uchun offer faqat "user_connected" eventida yuboriladi.
     console.log('[RTC] PeerConnection ready, waiting for peer to join...');
@@ -310,7 +318,41 @@ export function ChatRoom({
   const createAndSendOffer = async (pc: RTCPeerConnection) => {
     try {
       console.log('[RTC] Creating offer...');
-      const offer = await pc.createOffer();
+
+      // SIMULCAST (3 ta qatlam: high/mid/low)
+      const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+      if (sender) {
+        try {
+          const params = sender.getParameters();
+          params.encodings = [
+            {
+              rid: 'high',
+              maxBitrate: 2500000, // ~2.5 Mbps
+              scaleResolutionDownBy: 1.0, // 1080p
+            },
+            {
+              rid: 'mid',
+              maxBitrate: 1000000, // ~1 Mbps
+              scaleResolutionDownBy: 1.5, // ~720p
+            },
+            {
+              rid: 'low',
+              maxBitrate: 300000, // ~300 kbps
+              scaleResolutionDownBy: 3.0, // ~360p
+            },
+          ];
+          await sender.setParameters(params);
+          console.log('[RTC] Simulcast enabled.');
+        } catch (err) {
+          console.warn('[RTC] Simulcast not supported or setParameters failed:', err);
+        }
+      }
+
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+
       await pc.setLocalDescription(offer);
 
       const socket = wsRef.current;
@@ -328,6 +370,76 @@ export function ChatRoom({
     } catch (error) {
       console.error('Failed to create offer:', error);
     }
+  };
+
+  const startDynamicQualityMonitor = (pc: RTCPeerConnection) => {
+    // Avval eski timer bo‘lsa tozalaymiz
+    if (qualityMonitorRef.current !== null) {
+      window.clearInterval(qualityMonitorRef.current);
+      qualityMonitorRef.current = null;
+    }
+
+    // Har 3 sekundda stats tekshirish
+    const id = window.setInterval(async () => {
+      try {
+        const stats = await pc.getStats();
+        let outbound: any = null;
+
+        stats.forEach((report) => {
+          // Chrome: type "outbound-rtp" & kind "video"
+          if (report.type === 'outbound-rtp' && (report as any).kind === 'video') {
+            outbound = report;
+          }
+        });
+
+        if (!outbound) return;
+
+        const bytesSent = outbound.bytesSent as number | undefined;
+        const packetsSent = outbound.packetsSent as number | undefined;
+        const packetsLost = (outbound.packetsLost as number | undefined) ?? 0;
+        const fps = (outbound.framesPerSecond as number | undefined) ?? 0;
+
+        console.log('📉 Bitrate stats:', {
+          bytesSent,
+          packetsSent,
+          packetsLost,
+          fps,
+        });
+
+        const senders = pc.getSenders();
+        const videoSender = senders.find((s) => s.track?.kind === 'video');
+
+        if (!videoSender) return;
+
+        const params = videoSender.getParameters();
+        if (!params.encodings) return;
+
+        // Hech bo‘lmasa eng katta qatlam bilan ishlaymiz
+        const [high, mid, low] = params.encodings;
+
+        // Internet yomonlashganda → bitrate qisqartiramiz
+        if (packetsLost > 20 || fps < 10) {
+          if (high) high.maxBitrate = 800_000;
+          if (mid) mid.maxBitrate = 400_000;
+          if (low) low.maxBitrate = 150_000;
+          console.log('⚠️ Internet yomon → bitrate pasaytirildi');
+        }
+
+        // Internet yaxshi → bitrate qayta ko‘tariladi
+        if (packetsLost < 5 && fps > 25) {
+          if (high) high.maxBitrate = 2_500_000;
+          if (mid) mid.maxBitrate = 1_000_000;
+          if (low) low.maxBitrate = 300_000;
+          console.log('🚀 Internet yaxshi → bitrate ko‘tarildi');
+        }
+
+        await videoSender.setParameters(params);
+      } catch (err) {
+        console.error('Dynamic quality monitor error:', err);
+      }
+    }, 3000);
+
+    qualityMonitorRef.current = id;
   };
 
   const flushPendingCandidates = async (pc: RTCPeerConnection) => {
@@ -537,6 +649,11 @@ export function ChatRoom({
 
   const cleanup = () => {
     console.log('[CLEANUP] Closing WS, PC, and media tracks');
+
+    if (qualityMonitorRef.current !== null) {
+      window.clearInterval(qualityMonitorRef.current);
+      qualityMonitorRef.current = null;
+    }
 
     if (wsRef.current) {
       try {

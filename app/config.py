@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     STUN_SERVER: str = "stun:stun.l.google.com:19302"
 
     # ❗ TURN_SERVER faqat IP:PORT bo‘lishi shart — hech qachon turn: prefix bilan emas!
-    TURN_SERVER: str = "37.140.216.113:3478"
+    TURN_SERVER: str = "turn:37.140.216.113:3478"
     TURN_USERNAME: str = "nekto"
     TURN_PASSWORD: str = "super_secret_password_123"
 

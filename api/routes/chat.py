@@ -75,7 +75,10 @@ class ConnectionManager:
             logger.error(f"[WS SEND ERROR] user={user_id} → {e}")
 
     async def broadcast(
-        self, session_id: str, data: dict, exclude: str | None = None
+        self,
+        session_id: str,
+        data: dict,
+        exclude: str | None = None,
     ) -> None:
         users = self.sessions.get(session_id, set())
         logger.info(
@@ -180,28 +183,29 @@ async def websocket_chat(ws: WebSocket, session_id: str):
         )
 
     # -----------------------------------------
-    # 4.5) CALLER / CALLEE rolini yuborish (MUHIM!)
+    # 4.5) CALLER / CALLEE rolini yuborish
     # -----------------------------------------
-
     role = "caller" if user_id == user1 else "callee"
 
-    await manager.send(user_id, {
-        "type": "role",
-        "role": role
-    })
+    await manager.send(
+        user_id,
+        {
+            "type": "role",
+            "role": role,
+        },
+    )
 
     logger.info(f"[WS ROLE] user={user_id} → role={role}")
 
     # -----------------------------------------
     # 5) STUN/TURN konfiguratsiyasini yuborish
-    #    (frontend EXACT shu formatni kutyapti)
     # -----------------------------------------
     await manager.send(
         user_id,
         {
             "type": "stun_turn",
             "stun_server": settings.STUN_SERVER,
-            "turn_server": settings.TURN_SERVER,          # masalan: "turn:37.140.216.113:3478"
+            "turn_server": settings.TURN_SERVER,  # masalan: "turn:37.140.216.113:3478"
             "turn_username": settings.TURN_USERNAME,
             "turn_password": settings.TURN_PASSWORD,
         },
@@ -237,6 +241,7 @@ async def websocket_chat(ws: WebSocket, session_id: str):
                     session_id,
                     {
                         "type": "chat_message",
+                        "id": str(new_msg.id),
                         "sender_id": user_id,
                         "content": content,
                         "timestamp": new_msg.created_at.isoformat(),
@@ -249,7 +254,10 @@ async def websocket_chat(ws: WebSocket, session_id: str):
             # -------------------------
             elif msg_type in ("offer", "answer", "candidate"):
                 # Frontend handleWebRTCSignal quyidagi formatni kutyapti:
-                # { type: 'webrtc_signal', signal_type: 'offer' | 'answer' | 'candidate', data: {...}, sender_id: ... }
+                # { type: 'webrtc_signal',
+                #   signal_type: 'offer' | 'answer' | 'candidate',
+                #   data: {...},
+                #   sender_id: ... }
                 await manager.broadcast(
                     session_id,
                     {

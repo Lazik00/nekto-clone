@@ -10,7 +10,7 @@ import {
   Send,
   AlertTriangle,
   Ban,
-  ChevronDown
+  ChevronDown,
 } from 'lucide-react';
 import { User } from '../App';
 import { getApiUrl, getWsUrl } from '../config/api';
@@ -37,7 +37,7 @@ export function ChatRoom({
   currentUser,
   matchUser,
   onEndChat,
-  onBack
+  onBack,
 }: ChatRoomProps) {
   const [connectionStatus, setConnectionStatus] = useState<
     'connecting' | 'connected' | 'disconnected'
@@ -84,7 +84,7 @@ export function ChatRoom({
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error(
-          'Your browser does not support camera/microphone access. Please use a modern browser like Chrome, Firefox, or Edge.'
+          'Your browser does not support camera/microphone access. Please use a modern browser like Chrome, Firefox, or Edge.',
         );
       }
 
@@ -93,13 +93,13 @@ export function ChatRoom({
         video: {
           width: { ideal: 1280 },
           height: { ideal: 720 },
-          facingMode: 'user'
+          facingMode: 'user',
         },
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
-        }
+          autoGainControl: true,
+        },
       });
 
       localStreamRef.current = stream;
@@ -121,7 +121,6 @@ export function ChatRoom({
       websocket.onmessage = (event) => {
         const data = JSON.parse(event.data);
         console.log('[WS MESSAGE]', data);
-        // async function, lekin await qilmasak ham bo‘ladi
         void handleWebSocketMessage(data);
       };
 
@@ -203,11 +202,11 @@ export function ChatRoom({
         setMessages((prev) => [
           ...prev,
           {
-            id: Date.now().toString(),
+            id: (data.id ?? Date.now()).toString(),
             sender_id: data.sender_id,
             content: data.content,
-            timestamp: data.timestamp
-          }
+            timestamp: data.timestamp ?? new Date().toISOString(),
+          },
         ]);
         break;
 
@@ -219,9 +218,7 @@ export function ChatRoom({
       case 'user_connected': {
         console.log('[WS] User connected:', data.user_id);
 
-        // Eʼtibor: bu eventni faqat opponent emas, balki backend hozir
-        // hozirgi kod bo‘yicha faqat BIR tomonga (odam1ga) yuboryapti.
-        // Shuning uchun shu tomonda – agar caller bo‘lsak – shu paytda OFFER yuboramiz.
+        // Caller tarafda: opponent ulansa, offer yuboramiz
         if (roleRef.current === 'caller' && peerConnectionRef.current) {
           console.log('[RTC] Peer joined, sending initial offer...');
           await createAndSendOffer(peerConnectionRef.current);
@@ -255,9 +252,9 @@ export function ChatRoom({
         {
           urls: stunTurnData.turn_server,
           username: stunTurnData.turn_username,
-          credential: stunTurnData.turn_password
-        }
-      ]
+          credential: stunTurnData.turn_password,
+        },
+      ],
     };
 
     console.log('[RTC] Creating RTCPeerConnection with config:', configuration);
@@ -287,8 +284,8 @@ export function ChatRoom({
           socket.send(
             JSON.stringify({
               type: 'candidate',
-              data: event.candidate
-            })
+              data: event.candidate,
+            }),
           );
         } else {
           console.warn('[RTC] ICE candidate, but WebSocket not ready');
@@ -302,9 +299,8 @@ export function ChatRoom({
 
     peerConnectionRef.current = pc;
 
-    // DIQQAT:
-    // Endi bu yerda offer YARATMAYMIZ.
-    // Offer faqat caller uchun "user_connected" event kelganda yuboriladi.
+    // Offer bu yerda YARATILMAYDI.
+    // Caller uchun offer faqat "user_connected" eventida yuboriladi.
     console.log('[RTC] PeerConnection ready, waiting for peer to join...');
   };
 
@@ -320,8 +316,8 @@ export function ChatRoom({
         socket.send(
           JSON.stringify({
             type: 'offer',
-            data: offer
-          })
+            data: offer,
+          }),
         );
       } else {
         console.warn('[RTC] Cannot send offer, WS not open');
@@ -335,7 +331,7 @@ export function ChatRoom({
     if (!pendingCandidatesRef.current.length) return;
 
     console.log(
-      `[RTC] Flushing ${pendingCandidatesRef.current.length} pending ICE candidates`
+      `[RTC] Flushing ${pendingCandidatesRef.current.length} pending ICE candidates`,
     );
 
     for (const candidateInit of pendingCandidatesRef.current) {
@@ -374,8 +370,8 @@ export function ChatRoom({
             socket.send(
               JSON.stringify({
                 type: 'answer',
-                data: answer
-              })
+                data: answer,
+              }),
             );
           } else {
             console.warn('[RTC] Cannot send answer, WS not open');
@@ -418,24 +414,18 @@ export function ChatRoom({
     const socket = wsRef.current;
     if (!inputMessage.trim() || !socket || socket.readyState !== WebSocket.OPEN) return;
 
-    socket.send(
-      JSON.stringify({
-        type: 'chat_message',
-        content: inputMessage
-      })
-    );
-
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: Date.now().toString(),
-        sender_id: currentUser.id,
-        content: inputMessage,
-        timestamp: new Date().toISOString()
-      }
-    ]);
-
-    setInputMessage('');
+    // Xabarni faqat server orqali tarqatamiz
+    try {
+      socket.send(
+        JSON.stringify({
+          type: 'chat_message',
+          content: inputMessage,
+        }),
+      );
+      setInputMessage('');
+    } catch (e) {
+      console.error('Failed to send message via WS:', e);
+    }
   };
 
   const toggleVideo = () => {
@@ -471,12 +461,16 @@ export function ChatRoom({
   const endSession = (reason: string) => {
     const socket = wsRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(
-        JSON.stringify({
-          type: 'end_session',
-          reason
-        })
-      );
+      try {
+        socket.send(
+          JSON.stringify({
+            type: 'end_session',
+            reason,
+          }),
+        );
+      } catch (e) {
+        console.error('Failed to send end_session:', e);
+      }
     }
     cleanup();
   };
@@ -500,14 +494,14 @@ export function ChatRoom({
         method: 'POST',
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           reported_user_id: matchUser.id,
           reason: reportReason,
           description: reportDescription,
-          chat_session_id: sessionId
-        })
+          chat_session_id: sessionId,
+        }),
       });
 
       alert('Report submitted successfully');
@@ -525,8 +519,8 @@ export function ChatRoom({
       await fetch(getApiUrl(`/match/block/${matchUser.id}`), {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
+          Authorization: `Bearer ${accessToken}`,
+        },
       });
 
       alert('User blocked successfully');
@@ -561,6 +555,11 @@ export function ChatRoom({
 
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
+
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+
     remoteDescriptionSetRef.current = false;
     pendingCandidatesRef.current = [];
     setConnectionStatus('disconnected');
@@ -709,11 +708,7 @@ export function ChatRoom({
                 : 'bg-red-600 hover:bg-red-700 text-white'
             }`}
           >
-            {audioEnabled ? (
-              <Mic className="w-6 h-6" />
-            ) : (
-              <MicOff className="w-6 h-6" />
-            )}
+            {audioEnabled ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
           </button>
 
           <button

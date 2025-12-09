@@ -19,7 +19,7 @@ router = APIRouter()
 
 
 # ==========================================
-# 🔥 FIND MATCH
+# 🔥 FIND MATCH (CALLER ALWAYS = current_user)
 # ==========================================
 
 @router.post("/find", dependencies=[Depends(get_user_from_token)])
@@ -28,48 +28,69 @@ async def find_match_endpoint(
     current_user: User = Depends(get_user_from_token),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
+
     logger.info(f"[FIND] User={current_user.id} requested match | Prefs={request.preferences}")
 
-    # --- pending notifications ---
+    # ----------------------------------------------------
+    # 1) PENDING NOTIFICATION → USER OLDIN MATCH TOPGAN
+    # ----------------------------------------------------
     try:
         notifications = await notification_manager.get_notifications(current_user.id)
         logger.info(f"[FIND] User={current_user.id} notifications={notifications}")
 
-        if notifications:
-            for n in notifications:
-                if isinstance(n, dict) and n.get("type") == "match_found":
-                    logger.warning(f"[FIND] Delivering PENDING MATCH to user {current_user.id}")
-                    sess_id = n.get("session_id")
-                    match_data = n.get("match", {})
+        for n in notifications:
+            if isinstance(n, dict) and n.get("type") == "match_found":
+                logger.warning(f"[FIND] Delivering PENDING MATCH → {current_user.id}")
 
-                    return {
-                        "status": "matched",
-                        "session_id": sess_id,
-                        "match": match_data
-                    }
+                return {
+                    "status": "matched",
+                    "session_id": n["session_id"],
+                    "match": n["match"]
+                }
+
     except Exception as e:
-        logger.exception(f"[FIND] Pending notification check FAILED → user={current_user.id}, error={e}")
+        logger.exception(f"[FIND ERROR] Failed to check pending notifications → {e}")
 
-    # --- add to queue ---
-    logger.info(f"[QUEUE] Adding user {current_user.id} to matchmaking queue")
+    # ----------------------------------------------------
+    # 2) Hali match topilmagan → queue'ga qo‘shamiz
+    # ----------------------------------------------------
+    logger.info(f"[QUEUE] Adding user {current_user.id} to queue")
     await add_to_queue(current_user.id, request.preferences or {})
 
-    # --- try immediate match ---
-    matched_user_id = await find_match(current_user.id, session, request.preferences or {})
-    logger.info(f"[MATCH] Immediate matching result → for {current_user.id} got={matched_user_id}")
+    # ----------------------------------------------------
+    # 3) IMMEDIATE MATCHING
+    # ----------------------------------------------------
+    matched_user_id = await find_match(
+        current_user.id, session, request.preferences or {}
+    )
+
+    logger.info(
+        f"[MATCH] Immediate matching result → user={current_user.id} got={matched_user_id}"
+    )
 
     if matched_user_id:
+
+        # opponent user data
         stmt = select(User).where(User.id == matched_user_id)
         matched_user = (await session.execute(stmt)).scalar_one_or_none()
 
         if matched_user:
-            chat_session = await store_match(current_user.id, matched_user_id, session)
 
-            logger.info(
-                f"[MATCH SUCCESS] {current_user.id} <-> {matched_user_id} | session={chat_session.id}"
+            # *********************************************
+            #   CURRENT_USER → CALLER (user_id_1)
+            #   MATCHED_USER → CALLEE (user_id_2)
+            # *********************************************
+            chat_session = await store_match(
+                caller_id=current_user.id,
+                callee_id=matched_user_id,
+                db=session
             )
 
-            # send notification to opponent
+            logger.info(
+                f"[MATCH SUCCESS] caller={current_user.id}  callee={matched_user_id} | session={chat_session.id}"
+            )
+
+            # Notify opponent (callee)
             await notification_manager.add_notification(
                 matched_user_id,
                 {
@@ -87,8 +108,12 @@ async def find_match_endpoint(
                     }
                 }
             )
-            logger.info(f"[NOTIFY] Match notification sent → to={matched_user_id}")
 
+            logger.info(
+                f"[NOTIFY] Sent match notification → to callee={matched_user_id}"
+            )
+
+            # Caller tarafga qaytariladigan JSON
             return {
                 "status": "matched",
                 "session_id": chat_session.id,
@@ -104,44 +129,47 @@ async def find_match_endpoint(
                 }
             }
 
-    logger.info(f"[QUEUE] No match found → user={current_user.id} queued")
+    # ---------------------------------------------
+    # 4) Hali match topilmadi → queue’da kutadi
+    # ---------------------------------------------
+    logger.info(f"[QUEUE] No match found → user={current_user.id} now waiting")
+
     return {"status": "queued", "wait_message": "Searching for a match..."}
 
 
 # ==========================================
-# 🔥 PENDING NOTIFICATIONS
+# 🔥 GET PENDING NOTIFICATIONS
 # ==========================================
 
 @router.get("/notifications", dependencies=[Depends(get_user_from_token)])
 async def get_notifications_endpoint(current_user: User = Depends(get_user_from_token)):
-    logger.info(f"[NOTIFICATIONS] User={current_user.id} requested notifications")
-    notifications = await notification_manager.get_notifications(current_user.id)
-    logger.info(f"[NOTIFICATIONS] OUT → {notifications}")
-    return {"notifications": notifications}
+    logger.info(f"[NOTIFICATIONS] {current_user.id} → requested")
+    data = await notification_manager.get_notifications(current_user.id)
+    return {"notifications": data}
 
 
 # ==========================================
 # 🔥 QUEUE STATUS
 # ==========================================
 
-@router.get("/queue-status", response_model=QueueStatus, dependencies=[Depends(get_user_from_token)])
+@router.get(
+    "/queue-status",
+    response_model=QueueStatus,
+    dependencies=[Depends(get_user_from_token)]
+)
 async def get_queue_status(current_user: User = Depends(get_user_from_token)):
-    logger.info(f"[QUEUE STATUS] Checking position for user={current_user.id}")
 
-    position = await get_queue_position(current_user.id)
+    logger.info(f"[QUEUE STATUS] Checking position → user={current_user.id}")
+    pos = await get_queue_position(current_user.id)
 
-    if position < 0:
-        logger.warning(f"[QUEUE STATUS] User {current_user.id} NOT IN QUEUE")
+    if pos < 0:
+        logger.warning(f"[QUEUE STATUS] User {current_user.id} NOT in queue")
         raise HTTPException(404, "User not in queue")
 
-    estimate = max(0, (position - 1) * 10)
-
-    logger.info(
-        f"[QUEUE STATUS] User={current_user.id} pos={position} wait={estimate}s"
-    )
+    estimate = max(0, (pos - 1) * 10)
 
     return {
-        "position": position,
+        "position": pos,
         "wait_time_seconds": estimate,
         "estimated_match_in": estimate,
     }
@@ -153,7 +181,7 @@ async def get_queue_status(current_user: User = Depends(get_user_from_token)):
 
 @router.post("/cancel", dependencies=[Depends(get_user_from_token)])
 async def cancel_matchmaking(current_user: User = Depends(get_user_from_token)):
-    logger.info(f"[QUEUE CANCEL] Removing user {current_user.id} from queue")
+    logger.info(f"[QUEUE CANCEL] {current_user.id}")
     await remove_from_queue(current_user.id)
     return {"message": "Matchmaking canceled"}
 
@@ -168,24 +196,22 @@ async def block_user(
     current_user: User = Depends(get_user_from_token),
     session: AsyncSession = Depends(get_db),
 ):
-    logger.warning(f"[BLOCK] User={current_user.id} → Blocking {user_id}")
 
     if user_id == current_user.id:
-        logger.error("[BLOCK] User tried to block themself")
         raise HTTPException(400, "Cannot block yourself")
 
     stmt = select(User).where(User.id == user_id)
     target = (await session.execute(stmt)).scalar_one_or_none()
+
     if not target:
-        logger.error(f"[BLOCK] Target user {user_id} not found")
         raise HTTPException(404, "User not found")
 
     stmt = select(BlockedUser).where(
         (BlockedUser.blocker_user_id == current_user.id) &
         (BlockedUser.blocked_user_id == user_id)
     )
+
     if (await session.execute(stmt)).scalar_one_or_none():
-        logger.warning(f"[BLOCK] Duplicate block → {user_id}")
         raise HTTPException(400, "User already blocked")
 
     blocked = BlockedUser(
@@ -196,9 +222,8 @@ async def block_user(
     session.add(blocked)
     current_user.blocked_users_count += 1
     session.add(current_user)
-    await session.commit()
 
-    logger.info(f"[BLOCK] SUCCESS → {current_user.id} blocked {user_id}")
+    await session.commit()
 
     return {"message": "User blocked successfully"}
 
@@ -213,25 +238,21 @@ async def unblock_user(
     current_user: User = Depends(get_user_from_token),
     session: AsyncSession = Depends(get_db),
 ):
-    logger.info(f"[UNBLOCK] User={current_user.id} → Unblocking {user_id}")
 
     stmt = select(BlockedUser).where(
         (BlockedUser.blocker_user_id == current_user.id) &
         (BlockedUser.blocked_user_id == user_id)
     )
-    blocked = (await session.execute(stmt)).scalar_one_or_none()
 
+    blocked = (await session.execute(stmt)).scalar_one_or_none()
     if not blocked:
-        logger.warning(f"[UNBLOCK] No block found → {user_id}")
         raise HTTPException(404, "User not blocked")
 
     session.delete(blocked)
     current_user.blocked_users_count = max(0, current_user.blocked_users_count - 1)
     session.add(current_user)
+
     await session.commit()
-
-    logger.info(f"[UNBLOCK] SUCCESS → {current_user.id} unblocked {user_id}")
-
     return {"message": "User unblocked successfully"}
 
 
@@ -244,23 +265,23 @@ async def get_blocked_list(
     current_user: User = Depends(get_user_from_token),
     session: AsyncSession = Depends(get_db),
 ):
-    logger.info(f"[BLOCK LIST] Load for user={current_user.id}")
 
-    stmt = select(BlockedUser).where(BlockedUser.blocker_user_id == current_user.id)
-    blocked_records = (await session.execute(stmt)).scalars().all()
+    stmt = select(BlockedUser).where(
+        BlockedUser.blocker_user_id == current_user.id
+    )
+    records = (await session.execute(stmt)).scalars().all()
 
     users = []
-    for record in blocked_records:
-        stmt = select(User).where(User.id == record.blocked_user_id)
-        user = (await session.execute(stmt)).scalar_one_or_none()
+    for r in records:
+        stmt = select(User).where(User.id == r.blocked_user_id)
+        u = (await session.execute(stmt)).scalar_one_or_none()
 
-        if user:
+        if u:
             users.append({
-                "id": user.id,
-                "display_name": user.display_name,
-                "avatar_url": user.avatar_url,
-                "blocked_at": record.created_at,
+                "id": u.id,
+                "display_name": u.display_name,
+                "avatar_url": u.avatar_url,
+                "blocked_at": r.created_at,
             })
 
-    logger.info(f"[BLOCK LIST] Count={len(users)}")
     return {"blocked_users": users}

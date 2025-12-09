@@ -254,24 +254,33 @@ async def check_preferences(
 
 
 async def store_match(
-    user_id_1: str,
-    user_id_2: str,
-    session: AsyncSession
+    caller_id: str,
+    callee_id: str,
+    db: AsyncSession
 ) -> ChatSession:
-    """Create a chat session for matched users"""
+    """
+    ALWAYS:
+        user_id_1 = caller (the one who pressed /find)
+        user_id_2 = callee (the matched user)
+    """
+
     chat_session = ChatSession(
-        user_id_1=user_id_1,
-        user_id_2=user_id_2,
-        status="active"
+        user_id_1=caller_id,   # ALWAYS CALLER
+        user_id_2=callee_id,   # ALWAYS CALLEE
+        status="active",
+        started_at=datetime.utcnow()
     )
 
-    session.add(chat_session)
-    await session.commit()
-    await session.refresh(chat_session)
+    db.add(chat_session)
+    await db.commit()
+    await db.refresh(chat_session)
 
-    logger.info(f"Chat session created: {chat_session.id} between {user_id_1} and {user_id_2}")
+    logger.info(
+        f"[STORE MATCH] Chat session created: {chat_session.id} | caller={caller_id} → callee={callee_id}"
+    )
 
     return chat_session
+
 
 
 async def rate_limit_check(user_id: str) -> bool:

@@ -94,7 +94,7 @@ manager = ConnectionManager()
 #   WEBSOCKET ROUTE (FINAL)
 # ==========================================
 
-@router.websocket("/api/v1/chat/ws/{session_id}")
+@router.websocket("/chat/ws/{session_id}")
 async def websocket_chat(ws: WebSocket, session_id: str):
     # -----------------------------------------
     # 1) Read token from ?token=

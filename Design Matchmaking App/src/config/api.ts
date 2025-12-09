@@ -36,6 +36,8 @@ export const getApiUrl = (endpoint: string): string => {
 };
 
 // Build a full WebSocket URL
+// Build a full WebSocket URL (correct)
 export const getWsUrl = (sessionId: string, token: string): string => {
   return `${WS_URL}${API_ENDPOINTS.chatWs}/${sessionId}?token=${token}`;
 };
+

@@ -94,11 +94,13 @@ export function ChatRoom({
         localVideoRef.current.srcObject = stream;
       }
 
-      // Connect to WebSocket
-      const wsUrl = getWsUrl(sessionId, accessToken);
-      console.log("WS:", wsUrl.replace(accessToken, "HIDDEN"));
 
+      const token = localStorage.getItem("accessToken");
+
+      const wsUrl = getWsUrl(sessionId, token);
+      console.log("WS:", wsUrl.replace(token, "HIDDEN"));
       const websocket = new WebSocket(wsUrl);
+
 
 
       websocket.onopen = () => {

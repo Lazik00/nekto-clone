@@ -51,6 +51,10 @@ export function ChatRoom({
   const [reportReason, setReportReason] = useState('');
   const [reportDescription, setReportDescription] = useState('');
 
+  // Caller / Callee role (from backend)
+  const [role, setRole] = useState<'caller' | 'callee' | null>(null);
+  const roleRef = useRef<'caller' | 'callee' | null>(null);
+
   // Core refs
   const wsRef = useRef<WebSocket | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -62,9 +66,6 @@ export function ChatRoom({
   // WebRTC race-condition fixes
   const remoteDescriptionSetRef = useRef(false);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
-
-  // Only one side creates offer
-  const isCaller = currentUser.id < matchUser.id;
 
   useEffect(() => {
     initializeMediaAndWebSocket();
@@ -179,6 +180,18 @@ export function ChatRoom({
 
   const handleWebSocketMessage = async (data: any) => {
     switch (data.type) {
+      // Backend → role (caller / callee)
+      case 'role': {
+        if (data.role === 'caller' || data.role === 'callee') {
+          roleRef.current = data.role;
+          setRole(data.role);
+          console.log('[WS] Role set:', data.role);
+        } else {
+          console.warn('[WS] Unknown role value:', data.role);
+        }
+        break;
+      }
+
       // Backend sends STUN/TURN here
       case 'stun_turn':
         console.log('[WS] STUN/TURN config received', data);
@@ -279,11 +292,19 @@ export function ChatRoom({
 
     peerConnectionRef.current = pc;
 
-    // Only caller sends offer
+    // Decide caller:
+    // 1) Prefer backend role
+    // 2) Fallback: deterministic by user id
+    const isCaller =
+      roleRef.current != null
+        ? roleRef.current === 'caller'
+        : currentUser.id < matchUser.id;
+
     if (isCaller) {
+      console.log('[RTC] I am CALLER — creating offer...');
       createAndSendOffer(pc);
     } else {
-      console.log('[RTC] This peer is callee, waiting for offer...');
+      console.log('[RTC] I am CALLEE — waiting for offer...');
     }
   };
 
@@ -377,7 +398,6 @@ export function ChatRoom({
           const candidateInit = data.data as RTCIceCandidateInit;
 
           if (!remoteDescriptionSetRef.current) {
-            // Remote description hali yo‘q – bu candidate-ni navbatga qo‘yamiz
             console.log('[RTC] RemoteDescription not set yet, queueing candidate');
             pendingCandidatesRef.current.push(candidateInit);
           } else {
@@ -566,6 +586,11 @@ export function ChatRoom({
                   }`}
                 />
                 {connectionStatus === 'connected' ? 'Connected' : 'Connecting...'}
+                {role && (
+                  <span className="px-2 py-0.5 rounded-full bg-gray-700 text-[10px] uppercase">
+                    {role}
+                  </span>
+                )}
               </div>
             </div>
           </div>

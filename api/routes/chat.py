@@ -59,7 +59,6 @@ class ConnectionManager:
         if session_id in self.sessions:
             self.sessions[session_id].discard(user_id)
 
-            # agar sessiyada user qolmasa → sessiyani ochirib tashlaymiz
             if len(self.sessions[session_id]) == 0:
                 logger.info(f"[WS SESSION CLOSED] {session_id} (empty)")
                 del self.sessions[session_id]
@@ -179,6 +178,19 @@ async def websocket_chat(ws: WebSocket, session_id: str):
             {"type": "user_connected", "user_id": user_id},
             exclude=user_id,
         )
+
+    # -----------------------------------------
+    # 4.5) CALLER / CALLEE rolini yuborish (MUHIM!)
+    # -----------------------------------------
+
+    role = "caller" if user_id == user1 else "callee"
+
+    await manager.send(user_id, {
+        "type": "role",
+        "role": role
+    })
+
+    logger.info(f"[WS ROLE] user={user_id} → role={role}")
 
     # -----------------------------------------
     # 5) STUN/TURN konfiguratsiyasini yuborish

@@ -26,69 +26,44 @@ router = APIRouter()
 # ==========================================
 #   CONNECTION MANAGER
 # ==========================================
-
 class ConnectionManager:
-    """
-    WebSocket connection manager:
-    - clients: user_id -> WebSocket
-    - sessions: session_id -> {user_id1, user_id2}
-    """
+    def __init__(self):
+        self.clients: Dict[str, WebSocket] = {}     # user_id -> ws
+        self.sessions: Dict[str, Set[str]] = {}     # session_id -> {user_ids}
 
-    def __init__(self) -> None:
-        self.clients: Dict[str, WebSocket] = {}
-        self.sessions: Dict[str, Set[str]] = {}
-
-    async def connect(self, user_id: str, session_id: str, ws: WebSocket) -> None:
-        logger.info(
-            f"[WS CONNECT] Accepting WebSocket → user={user_id}, session={session_id}"
-        )
+    async def connect(self, user_id: str, session_id: str, ws: WebSocket):
         await ws.accept()
-
         self.clients[user_id] = ws
         self.sessions.setdefault(session_id, set()).add(user_id)
 
-        logger.info(
-            f"[WS CONNECTED] session={session_id} users={self.sessions[session_id]}"
-        )
+        logger.info(f"[WS CONNECT] {user_id} joined session {session_id} | users={self.sessions[session_id]}")
 
-    async def disconnect(self, user_id: str, session_id: str) -> None:
-        logger.warning(f"[WS DISCONNECT] user={user_id}, session={session_id}")
-
+    async def disconnect(self, user_id: str, session_id: str):
         self.clients.pop(user_id, None)
 
         if session_id in self.sessions:
             self.sessions[session_id].discard(user_id)
-
             if len(self.sessions[session_id]) == 0:
-                logger.info(f"[WS SESSION CLOSED] {session_id} (empty)")
+                logger.info(f"[WS SESSION CLOSED] empty → {session_id}")
                 del self.sessions[session_id]
 
-    async def send(self, user_id: str, data: dict) -> None:
+    async def send(self, user_id: str, data: dict):
         ws = self.clients.get(user_id)
         if not ws:
-            logger.warning(f"[WS SEND FAIL] User {user_id} not connected")
             return
 
         try:
             await ws.send_json(data)
-        except Exception as e:
-            logger.error(f"[WS SEND ERROR] user={user_id} → {e}")
+        except:
+            logger.exception(f"[WS SEND ERROR] {user_id}")
 
-    async def broadcast(
-        self,
-        session_id: str,
-        data: dict,
-        exclude: str | None = None,
-    ) -> None:
+    async def broadcast(self, session_id: str, data: dict, exclude: str = None):
         users = self.sessions.get(session_id, set())
-        logger.info(
-            f"[WS BROADCAST] session={session_id}, data={data}, users={users}"
-        )
-
         for uid in users:
             if exclude and uid == exclude:
                 continue
             await self.send(uid, data)
+
 
 
 manager = ConnectionManager()
@@ -100,54 +75,33 @@ manager = ConnectionManager()
 
 @router.websocket("/chat/ws/{session_id}")
 async def websocket_chat(ws: WebSocket, session_id: str):
-    """
-    Asosiy WebSocket endpoint:
-    - ?token=ACCESS_TOKEN orqali auth
-    - chat sessiyani tekshiradi
-    - STUN/TURN configni clientga yuboradi
-    - chat_message / offer / answer / candidate / end_session eventlarini boshqaradi
-    """
 
-    # -----------------------------------------
-    # 1) Token olish (?token=...)
-    # -----------------------------------------
+    # 1) TOKEN VALIDATION
     token = ws.query_params.get("token")
-
     if not token:
         await ws.close(code=1008, reason="Missing token")
         return
 
-    # -----------------------------------------
-    # 2) Tokenni tekshirish
-    # -----------------------------------------
     try:
-        payload = verify_token(token, token_type="access")
-        user_id: str | None = payload.get("sub")
+        payload = verify_token(token, "access")
+        user_id = payload.get("sub")
         if not user_id:
-            raise ValueError("No sub in token")
-    except Exception:
-        logger.error("[WS AUTH ERROR] Invalid token", exc_info=True)
+            raise Exception("No user in token")
+    except:
         await ws.close(code=1008, reason="Invalid token")
         return
 
-    logger.info(f"[WS AUTH OK] user_id={user_id}")
+    logger.info(f"[WS AUTH] user={user_id}")
 
-    # -----------------------------------------
-    # 3) User + ChatSession tekshirish
-    # -----------------------------------------
+
+    # 2) DB CHECKS
     async with async_session() as db:
-        # User tekshirish
-        stmt = select(User).where(User.id == user_id)
-        user = (await db.execute(stmt)).scalar_one_or_none()
-
+        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
         if not user or user.is_banned:
             await ws.close(code=1008, reason="User banned or not found")
             return
 
-        # Chat session tekshirish
-        stmt = select(ChatSession).where(ChatSession.id == session_id)
-        chat = (await db.execute(stmt)).scalar_one_or_none()
-
+        chat = (await db.execute(select(ChatSession).where(ChatSession.id == session_id))).scalar_one_or_none()
         if not chat:
             await ws.close(code=1008, reason="Session not found")
             return
@@ -155,158 +109,111 @@ async def websocket_chat(ws: WebSocket, session_id: str):
         user1 = chat.user_id_1
         user2 = chat.user_id_2
 
-        # Agar user sessiya ishtirokchilari ro'yxatida bo'lmasa:
+        # If user is not in the session → auto-fill user2 if empty
         if user_id not in [user1, user2]:
-            # bo'sh slot bo'lsa user2 ga yozib qo'yamiz
             if user2 is None:
                 chat.user_id_2 = user_id
                 await db.commit()
                 user2 = user_id
             else:
-                # Ikkala slot to'la -> session full
                 await ws.close(code=1008, reason="Session full")
                 return
 
-    # -----------------------------------------
-    # 4) WebSocketni managerga ro'yxatdan o'tkazish
-    # -----------------------------------------
-    await manager.connect(user_id, session_id, ws)
-
+    # Determine opponent and role
     opponent = user2 if user_id == user1 else user1
-
-    # Opponent ulangan bo‘lsa → unga "user_connected" jo‘natamiz
-    if opponent:
-        await manager.broadcast(
-            session_id,
-            {"type": "user_connected", "user_id": user_id},
-            exclude=user_id,
-        )
-
-    # -----------------------------------------
-    # 4.5) CALLER / CALLEE rolini yuborish
-    # -----------------------------------------
     role = "caller" if user_id == user1 else "callee"
 
-    await manager.send(
-        user_id,
-        {
-            "type": "role",
-            "role": role,
-        },
-    )
 
-    logger.info(f"[WS ROLE] user={user_id} → role={role}")
+    # 3) REGISTER CONNECTION
+    await manager.connect(user_id, session_id, ws)
 
-    # -----------------------------------------
-    # 5) STUN/TURN konfiguratsiyasini yuborish
-    # -----------------------------------------
-    await manager.send(
-        user_id,
-        {
-            "type": "stun_turn",
-            "stun_server": settings.STUN_SERVER,
-            "turn_server": settings.TURN_SERVER,  # masalan: "turn:37.140.216.113:3478"
-            "turn_username": settings.TURN_USERNAME,
-            "turn_password": settings.TURN_PASSWORD,
-        },
-    )
+    # Notify the user of its role
+    await manager.send(user_id, {"type": "role", "role": role})
 
-    # -----------------------------------------
-    # 6) MAIN MESSAGE LOOP
-    # -----------------------------------------
+    # Send STUN/TURN
+    await manager.send(user_id, {
+        "type": "stun_turn",
+        "stun_server": settings.STUN_SERVER,
+        "turn_server": settings.TURN_SERVER,
+        "turn_username": settings.TURN_USERNAME,
+        "turn_password": settings.TURN_PASSWORD,
+    })
+
+
+    # 4) IF OPPONENT ALREADY CONNECTED
+    # Caller should send offer ONLY when opponent is connected.
+    connected_users = manager.sessions.get(session_id, set())
+
+    if len(connected_users) == 1:
+        # first user → wait for the second user
+        await manager.send(user_id, {"type": "waiting_for_peer"})
+    else:
+        # second user just joined → notify both sides
+        await manager.broadcast(session_id, {
+            "type": "user_connected",
+            "user_id": user_id
+        }, exclude=None)
+
+
+    # 5) MAIN LOOP
     try:
         while True:
             raw = await ws.receive_text()
             msg = json.loads(raw)
             msg_type = msg.get("type")
 
-            # -------------------------
-            # TEXT CHAT MESSAGE
-            # -------------------------
+            # TEXT MESSAGE
             if msg_type == "chat_message":
-                content = msg.get("content", "") or ""
+                content = msg.get("content", "")
 
                 async with async_session() as db:
                     new_msg = Message(
                         chat_session_id=session_id,
                         sender_id=user_id,
                         content=content,
-                        message_type="text",
+                        message_type="text"
                     )
                     db.add(new_msg)
                     await db.commit()
                     await db.refresh(new_msg)
 
-                await manager.broadcast(
-                    session_id,
-                    {
-                        "type": "chat_message",
-                        "id": str(new_msg.id),
-                        "sender_id": user_id,
-                        "content": content,
-                        "timestamp": new_msg.created_at.isoformat(),
-                    },
-                    exclude=None,  # ikkalasiga ham ko'rsatamiz
-                )
+                await manager.broadcast(session_id, {
+                    "type": "chat_message",
+                    "id": str(new_msg.id),
+                    "sender_id": user_id,
+                    "content": content,
+                    "timestamp": new_msg.created_at.isoformat()
+                })
 
-            # -------------------------
             # WEBRTC SIGNALING
-            # -------------------------
             elif msg_type in ("offer", "answer", "candidate"):
-                # Frontend handleWebRTCSignal quyidagi formatni kutyapti:
-                # { type: 'webrtc_signal',
-                #   signal_type: 'offer' | 'answer' | 'candidate',
-                #   data: {...},
-                #   sender_id: ... }
                 await manager.broadcast(
                     session_id,
                     {
                         "type": "webrtc_signal",
                         "signal_type": msg_type,
                         "data": msg.get("data"),
-                        "sender_id": user_id,
+                        "sender_id": user_id
                     },
                     exclude=user_id,
                 )
 
-            # -------------------------
-            # SESSION END
-            # -------------------------
             elif msg_type == "end_session":
-                reason = msg.get("reason", "ended")
-                await manager.broadcast(
-                    session_id,
-                    {
-                        "type": "session_ended",
-                        "reason": reason,
-                    },
-                    exclude=None,
-                )
+                await manager.broadcast(session_id, {
+                    "type": "session_ended",
+                    "reason": msg.get("reason", "ended")
+                })
                 break
 
-            # Noma'lum type
-            else:
-                logger.warning(f"[WS UNKNOWN MESSAGE TYPE] {msg_type} → {msg}")
-
     except WebSocketDisconnect:
-        logger.warning(f"[WS DISCONNECTED] user={user_id}")
-
-    except Exception as e:
-        logger.error(f"[WS ERROR] {e}", exc_info=True)
+        logger.info(f"[WS] user disconnected → {user_id}")
 
     finally:
-        # Managerdan chiqaramiz
         await manager.disconnect(user_id, session_id)
-        # Qolgan user(lar)ga xabar beramiz
-        await manager.broadcast(
-            session_id,
-            {
-                "type": "user_disconnected",
-                "user_id": user_id,
-            },
-            exclude=user_id,
-        )
-
+        await manager.broadcast(session_id, {
+            "type": "user_disconnected",
+            "user_id": user_id
+        })
 
 # ==========================================
 #   HTTP ENDPOINTS: HISTORY & SESSIONS

@@ -191,6 +191,9 @@ export function ChatRoom({
         }
         break;
       }
+      case 'waiting_for_peer':
+        console.log('[RTC] Waiting for peer to connect...');
+        break;
 
       // Backend sends STUN/TURN here
       case 'stun_turn':

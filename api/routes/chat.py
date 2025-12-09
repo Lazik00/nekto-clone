@@ -1,8 +1,8 @@
 # ==========================================
-#   WEBSOCKET CHAT + DEBUG LOGGING (FULL)
+#   WEBSOCKET CHAT — FINAL STABLE VERSION
 # ==========================================
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends, HTTPException, status
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Dict, Set
@@ -18,47 +18,45 @@ from app.config import settings
 logger = logging.getLogger("websocket")
 router = APIRouter()
 
-# Active WebSocket connections
+
+# ==========================================
+#   CONNECTION MANAGER
+# ==========================================
+
 class ConnectionManager:
     def __init__(self):
-        self.active: Dict[str, WebSocket] = {}
-        self.sessions: Dict[str, Set[str]] = {}
+        self.clients: Dict[str, WebSocket] = {}          # user_id → WebSocket
+        self.sessions: Dict[str, Set[str]] = {}          # session_id → {user1, user2}
 
     async def connect(self, user_id: str, session_id: str, ws: WebSocket):
-        logger.info(f"WS ACCEPT → user={user_id} session={session_id}")
         await ws.accept()
-
-        self.active[user_id] = ws
+        self.clients[user_id] = ws
         self.sessions.setdefault(session_id, set()).add(user_id)
 
-        logger.info(f"WS CONNECT OK → {user_id} joined {session_id}, total={len(self.sessions[session_id])}")
+        logger.info(f"[WS CONNECT] user={user_id} session={session_id}")
 
     async def disconnect(self, user_id: str, session_id: str):
-        logger.warning(f"WS DISCONNECT → user={user_id} session={session_id}")
-
-        self.active.pop(user_id, None)
+        self.clients.pop(user_id, None)
 
         if session_id in self.sessions:
             self.sessions[session_id].discard(user_id)
-            if not self.sessions[session_id]:
-                logger.info(f"WS SESSION EMPTY → removing session {session_id}")
+
+            if len(self.sessions[session_id]) == 0:
+                logger.info(f"[WS SESSION CLOSED] {session_id} empty")
                 del self.sessions[session_id]
 
-    async def send(self, user_id: str, data: dict):
-        ws = self.active.get(user_id)
-        if not ws:
-            logger.warning(f"WS SEND FAIL → user={user_id} not connected")
-            return
+        logger.warning(f"[WS DISCONNECT] user={user_id} session={session_id}")
 
-        try:
-            await ws.send_json(data)
-        except Exception as e:
-            logger.error(f"WS SEND ERROR → user={user_id}: {e}")
+    async def send(self, user_id: str, data: dict):
+        ws = self.clients.get(user_id)
+        if ws:
+            try:
+                await ws.send_json(data)
+            except Exception as e:
+                logger.error(f"[WS SEND ERROR] to {user_id}: {e}")
 
     async def broadcast(self, session_id: str, data: dict, exclude=None):
         users = self.sessions.get(session_id, set())
-        logger.info(f"WS BROADCAST → session={session_id} users={list(users)} exclude={exclude}")
-
         for uid in users:
             if uid == exclude:
                 continue
@@ -67,110 +65,104 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+
 # ==========================================
-#   WEBSOCKET ENTRY POINT
+#   MAIN WEBSOCKET ROUTER (FIXED PATH)
 # ==========================================
 
-@router.websocket("/ws/{session_id}")
-async def ws_handler(ws: WebSocket, session_id: str, token: str = Query(...)):
-    logger.info(f"WS CONNECT ATTEMPT → session={session_id}, token_len={len(token)}")
+@router.websocket("/api/v1/chat/ws/{session_id}")
+async def websocket_chat(ws: WebSocket, session_id: str):
 
-    user_id = None
-    user1 = None
-    user2 = None
+    # -----------------------------------------
+    # 1) TOKEN FROM QUERY PARAMS
+    # -----------------------------------------
+    token = ws.query_params.get("token")
 
+    if not token:
+        logger.error("[WS] Missing token")
+        await ws.close(code=1008, reason="Missing token")
+        return
+
+    # -----------------------------------------
+    # 2) VERIFY TOKEN
+    # -----------------------------------------
     try:
-        # ---------------------------
-        # 1) TOKEN VALIDATION
-        # ---------------------------
         payload = verify_token(token, token_type="access")
+        user_id = payload.get("sub")
+    except Exception:
+        logger.error("[WS] Invalid token")
+        await ws.close(code=1008, reason="Invalid token")
+        return
 
-        if not payload:
-            logger.error("WS TOKEN INVALID → closing 1008")
-            await ws.close(code=1008, reason="Invalid token")
+    logger.info(f"[WS AUTH OK] user={user_id}")
+
+    # -----------------------------------------
+    # 3) VALIDATE USER + SESSION FROM DATABASE
+    # -----------------------------------------
+
+    async with async_session() as db:
+
+        # check user
+        stmt = select(User).where(User.id == user_id)
+        user = (await db.execute(stmt)).scalar_one_or_none()
+
+        if not user or user.is_banned:
+            await ws.close(code=1008, reason="User blocked")
             return
 
-        user_id = payload.get("sub")
-        logger.info(f"WS TOKEN OK → user_id={user_id}")
+        # check chat session
+        stmt = select(ChatSession).where(ChatSession.id == session_id)
+        chat = (await db.execute(stmt)).scalar_one_or_none()
 
-        # ---------------------------
-        # 2) DB VALIDATION
-        # ---------------------------
-        async with async_session() as db:
-            # USER VALIDATION
-            stmt = select(User).where(User.id == user_id)
-            user = (await db.execute(stmt)).scalar_one_or_none()
+        if not chat:
+            await ws.close(code=1008, reason="Session not found")
+            return
 
-            if not user or user.is_banned:
-                logger.error(f"WS USER BLOCKED/NOT FOUND → {user_id}")
-                await ws.close(code=1008, reason="User banned or missing")
+        user1 = chat.user_id_1
+        user2 = chat.user_id_2
+
+        # allow join if empty
+        if user_id not in [user1, user2]:
+            if user2 is None:
+                chat.user_id_2 = user_id
+                await db.commit()
+            else:
+                await ws.close(code=1008, reason="Session full")
                 return
 
-            # SESSION VALIDATION
-            stmt = select(ChatSession).where(ChatSession.id == session_id)
-            chat = (await db.execute(stmt)).scalar_one_or_none()
+    # -----------------------------------------
+    # 4) ACCEPT CONNECTION
+    # -----------------------------------------
+    await manager.connect(user_id, session_id, ws)
 
-            if not chat:
-                logger.error(f"WS INVALID SESSION → {session_id}")
-                await ws.close(code=1008, reason="Session not found")
-                return
+    opponent = user2 if user1 == user_id else user1
+    if opponent:
+        await manager.broadcast(session_id, {
+            "type": "user_connected",
+            "user_id": user_id
+        }, exclude=user_id)
 
-            user1 = chat.user_id_1
-            user2 = chat.user_id_2
+    # send STUN / TURN config
+    await manager.send(user_id, {
+        "type": "stun_turn",
+        "stun_server": settings.STUN_SERVER,
+        "turn_server": settings.TURN_SERVER,
+        "turn_username": settings.TURN_USERNAME,
+        "turn_password": settings.TURN_PASSWORD,
+    })
 
-            # JOIN RULES
-            if user_id not in [user1, user2]:
-                if user2 is None and user_id != user1:
-                    logger.info(f"WS USER ASSIGNED AS USER2 → {user_id}")
-                    chat.user_id_2 = user_id
-                    await db.commit()
-                    user2 = user_id
-                else:
-                    logger.error("WS JOIN DENIED → session full")
-                    await ws.close(code=1008, reason="Not allowed into session")
-                    return
-
-        logger.info(f"WS VALIDATION OK → user={user_id} session={session_id} user1={user1} user2={user2}")
-
-        # ---------------------------
-        # 3) ACCEPT CONNECTION
-        # ---------------------------
-        await manager.connect(user_id, session_id, ws)
-
-        opponent = user2 if user_id == user1 else user1
-        logger.info(f"WS OPPONENT → {opponent}")
-
-        if opponent:
-            await manager.broadcast(session_id, {
-                "type": "user_connected",
-                "user_id": user_id
-            }, exclude=user_id)
-
-        # SEND STUN/TURN CONFIG
-        logger.info("WS SENDING STUN/TURN CONFIG")
-        await manager.send(user_id, {
-            "type": "stun_turn",
-            "stun": settings.STUN_SERVER,
-            "turn": settings.TURN_SERVER,
-            "turn_username": settings.TURN_USERNAME,
-            "turn_password": settings.TURN_PASSWORD,
-        })
-
-        # ---------------------------
-        # 4) MAIN RECV LOOP
-        # ---------------------------
+    # ==========================================
+    # 5) MAIN MESSAGE LOOP
+    # ==========================================
+    try:
         while True:
-            msg_raw = await ws.receive_text()
-            msg = json.loads(msg_raw)
-
-            logger.info(f"WS RECV MSG → {msg}")
-
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
             msg_type = msg.get("type")
 
-            # CHAT
-            if msg_type in ("chat_message", "message"):
+            # CHAT TEXT MESSAGE
+            if msg_type == "chat_message":
                 content = msg.get("content", "")
-                logger.info(f"WS CHAT MSG → {user_id}: {content}")
 
                 async with async_session() as db:
                     new_msg = Message(
@@ -191,46 +183,33 @@ async def ws_handler(ws: WebSocket, session_id: str, token: str = Query(...)):
                 })
 
             # WEBRTC SIGNALING
-            elif msg_type in ("offer", "answer", "candidate", "signal"):
-                logger.info(f"WS WEBRTC SIGNAL → {msg_type} from {user_id}")
+            elif msg_type in ("offer", "answer", "candidate"):
                 await manager.broadcast(session_id, {
                     "type": "webrtc_signal",
-                    "signal_type": msg.get("signal_type", msg_type),
+                    "signal_type": msg_type,
                     "data": msg.get("data"),
                     "sender_id": user_id,
                 }, exclude=user_id)
 
             # END SESSION
             elif msg_type == "end_session":
-                logger.warning(f"WS END SESSION → {session_id}")
-                async with async_session() as db:
-                    stmt = select(ChatSession).where(ChatSession.id == session_id)
-                    s = (await db.execute(stmt)).scalar_one_or_none()
-                    if s:
-                        s.status = "ended"
-                        await db.commit()
-
                 await manager.broadcast(session_id, {
                     "type": "session_ended",
-                    "reason": msg.get("reason")
+                    "reason": msg.get("reason", "ended")
                 })
                 break
 
     except WebSocketDisconnect:
-        logger.warning(f"WS DISCONNECT EVENT → user={user_id}")
+        logger.warning(f"[WS DISCONNECT EVENT] user={user_id}")
+    except Exception as e:
+        logger.error(f"[WS ERROR] {e}", exc_info=True)
+
+    finally:
         await manager.disconnect(user_id, session_id)
         await manager.broadcast(session_id, {
             "type": "user_disconnected",
             "user_id": user_id
         })
-
-    except Exception as e:
-        logger.error(f"WS ERROR → {e}", exc_info=True)
-        await manager.disconnect(user_id, session_id)
-        try:
-            await ws.close(code=1011, reason=str(e))
-        except:
-            pass
 
 
 

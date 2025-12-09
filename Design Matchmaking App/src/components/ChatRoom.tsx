@@ -56,12 +56,16 @@ export function ChatRoom({
   const localStreamRef = useRef<MediaStream | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // deterministic caller: faqat bitta taraf offer yuboradi
+  const isCaller = currentUser.id < matchUser.id;
+
   useEffect(() => {
     initializeMediaAndWebSocket();
 
     return () => {
       cleanup();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, accessToken]);
 
   useEffect(() => {
@@ -70,12 +74,10 @@ export function ChatRoom({
 
   const initializeMediaAndWebSocket = async () => {
     try {
-      // Check if mediaDevices is supported
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('Your browser does not support camera/microphone access. Please use a modern browser like Chrome, Firefox, or Edge.');
       }
 
-      // Request permissions and get local media stream
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
@@ -88,58 +90,45 @@ export function ChatRoom({
           autoGainControl: true
         }
       });
-      
+
       localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
 
-    const wsUrl = getWsUrl(sessionId); // ✔ universal, token ichida
-    console.log("WS URL:", wsUrl);
+      // 🔐 WS URL + token
+        const wsUrl = getWsUrl(sessionId); // ✔ universal, token ichida
+        console.log("WS URL:", wsUrl);
 
-    const websocket = new WebSocket(wsUrl);
-    setWs(websocket);
-
-
-
-
-
-
+        const websocket = new WebSocket(wsUrl);
+        setWs(websocket);
 
 
       websocket.onopen = () => {
         console.log('✅ WebSocket connected successfully');
         setConnectionStatus('connected');
+        setWs(websocket);
       };
 
       websocket.onmessage = (event) => {
-        handleWebSocketMessage(JSON.parse(event.data));
+        const data = JSON.parse(event.data);
+        console.log('[WS MESSAGE]', data);
+        handleWebSocketMessage(data);
       };
 
-      websocket.onerror = (error) => {
+      websocket.onerror = (error: any) => {
         console.error('❌ WebSocket error:', error);
-        console.error('Error type:', error.type);
-        console.error('Error target:', (error.target as WebSocket)?.readyState);
 
-        // Log helpful debugging information
-        const ws = error.target as WebSocket;
-        console.error('WebSocket ReadyState:', {
-          'CONNECTING': ws?.readyState === 0,
-          'OPEN': ws?.readyState === 1,
-          'CLOSING': ws?.readyState === 2,
-          'CLOSED': ws?.readyState === 3,
-          'Current': ws?.readyState
-        });
+        const target = error?.target as WebSocket | undefined;
+        console.error('WebSocket ReadyState:', target?.readyState);
 
         let errorMessage = 'WebSocket connection failed. ';
 
-        // Check for common issues
         if (error.type === 'error') {
           if (window.location.protocol === 'https:') {
-            errorMessage += 'SSL/Certificate issue detected. This is usually due to self-signed certificates. ';
-            errorMessage += 'Try accepting the certificate warning in your browser by visiting the WebSocket URL directly.';
+            errorMessage += 'Possible SSL/Certificate issue (self-signed). Try opening the WebSocket URL directly in the browser and accept the certificate.';
           } else {
-            errorMessage += 'Check your connection and ensure the backend is running.';
+            errorMessage += 'Check your internet connection and make sure backend is running.';
           }
         }
 
@@ -151,24 +140,21 @@ export function ChatRoom({
         console.log('WebSocket closed');
         setConnectionStatus('disconnected');
       };
-
-      setWs(websocket);
     } catch (error: any) {
       console.error('Failed to initialize media/websocket:', error);
 
-      // Provide specific error messages based on the error type
       let errorMessage = 'Failed to access camera/microphone. ';
 
       if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-        errorMessage += 'Permission denied. Please allow camera and microphone access in your browser settings and refresh the page.';
+        errorMessage += 'Permission denied. Please allow camera and microphone access in your browser and refresh the page.';
       } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
-        errorMessage += 'No camera or microphone found. Please connect a camera/microphone and try again.';
+        errorMessage += 'No camera or microphone found. Connect a device and try again.';
       } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
-        errorMessage += 'Camera or microphone is already in use by another application. Please close other applications and try again.';
+        errorMessage += 'Camera/microphone is already in use by another application.';
       } else if (error.name === 'OverconstrainedError') {
-        errorMessage += 'Camera/microphone does not meet the required specifications. Please try with different devices.';
+        errorMessage += 'Device does not match required constraints (resolution, etc). Try another device.';
       } else if (error.name === 'SecurityError') {
-        errorMessage += 'Access blocked due to security restrictions. Please ensure you are using HTTPS or localhost.';
+        errorMessage += 'Access blocked by browser security. Use HTTPS or localhost.';
       } else if (error.message) {
         errorMessage += error.message;
       } else {
@@ -176,16 +162,18 @@ export function ChatRoom({
       }
 
       alert(errorMessage);
-      onBack(); // Return to previous screen if media access fails
+      onBack();
     }
   };
 
   const handleWebSocketMessage = async (data: any) => {
     switch (data.type) {
-      case 'stun_turn_servers':
+      // 🔧 backend: type = "stun_turn"
+      case 'stun_turn':
+        console.log('[WS] STUN/TURN config received', data);
         initializePeerConnection(data);
         break;
-      
+
       case 'chat_message':
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
@@ -194,24 +182,28 @@ export function ChatRoom({
           timestamp: data.timestamp
         }]);
         break;
-      
+
       case 'webrtc_signal':
+        // server → client
         handleWebRTCSignal(data);
         break;
-      
+
       case 'user_connected':
         console.log('User connected:', data.user_id);
         break;
-      
+
       case 'user_disconnected':
         console.log('User disconnected:', data.user_id);
         handleUserDisconnected();
         break;
-      
+
       case 'session_ended':
         console.log('Session ended:', data.reason);
         handleSessionEnded();
         break;
+
+      default:
+        console.log('[WS] Unknown message type:', data.type, data);
     }
   };
 
@@ -227,46 +219,57 @@ export function ChatRoom({
       ]
     };
 
+    console.log('[RTC] Creating RTCPeerConnection with config:', configuration);
     const pc = new RTCPeerConnection(configuration);
 
-    // Add local stream tracks
+    // Local tracks
     localStreamRef.current?.getTracks().forEach(track => {
       pc.addTrack(track, localStreamRef.current!);
     });
 
-    // Handle incoming tracks
+    // Remote stream
     pc.ontrack = (event) => {
+      console.log('[RTC] ontrack', event.streams);
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
       }
     };
 
-    // Handle ICE candidates
+    // ICE candidates → send to other peer
     pc.onicecandidate = (event) => {
       if (event.candidate && ws) {
+        console.log('[RTC] Sending ICE candidate');
         ws.send(JSON.stringify({
-          type: 'webrtc_signal',
-          signal_type: 'candidate',
+          type: 'candidate',          // 🔥 backend expects this
           data: event.candidate
         }));
       }
     };
 
+    pc.onconnectionstatechange = () => {
+      console.log('[RTC] state =', pc.connectionState);
+    };
+
     peerConnectionRef.current = pc;
 
-    // Create and send offer
-    createAndSendOffer(pc);
+    // 🔥 faqat "caller" offer yaratadi
+    if (isCaller) {
+      createAndSendOffer(pc);
+    } else {
+      console.log('[RTC] This peer is callee, waiting for offer...');
+    }
   };
 
   const createAndSendOffer = async (pc: RTCPeerConnection) => {
     try {
+      console.log('[RTC] Creating offer...');
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      
+
       if (ws) {
+        console.log('[RTC] Sending offer via WS');
         ws.send(JSON.stringify({
-          type: 'webrtc_signal',
-          signal_type: 'offer',
+          type: 'offer',   // 🔥 backend expects this
           data: offer
         }));
       }
@@ -277,31 +280,40 @@ export function ChatRoom({
 
   const handleWebRTCSignal = async (data: any) => {
     const pc = peerConnectionRef.current;
-    if (!pc) return;
+    if (!pc) {
+      console.warn('[RTC] No peerConnectionRef yet');
+      return;
+    }
 
     try {
       switch (data.signal_type) {
         case 'offer':
+          console.log('[RTC] Received offer');
           await pc.setRemoteDescription(new RTCSessionDescription(data.data));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          
+
           if (ws) {
+            console.log('[RTC] Sending answer');
             ws.send(JSON.stringify({
-              type: 'webrtc_signal',
-              signal_type: 'answer',
+              type: 'answer',   // 🔥 backend expects this
               data: answer
             }));
           }
           break;
-        
+
         case 'answer':
+          console.log('[RTC] Received answer');
           await pc.setRemoteDescription(new RTCSessionDescription(data.data));
           break;
-        
+
         case 'candidate':
+          console.log('[RTC] Received ICE candidate');
           await pc.addIceCandidate(new RTCIceCandidate(data.data));
           break;
+
+        default:
+          console.log('[RTC] Unknown webrtc_signal type:', data.signal_type);
       }
     } catch (error) {
       console.error('Failed to handle WebRTC signal:', error);
@@ -431,10 +443,12 @@ export function ChatRoom({
     // Close peer connection
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
     }
 
     // Stop local media tracks
     localStreamRef.current?.getTracks().forEach(track => track.stop());
+    localStreamRef.current = null;
   };
 
   return (
@@ -520,7 +534,7 @@ export function ChatRoom({
 
       {/* Video Area */}
       <div className="flex-1 relative overflow-hidden">
-        {/* Remote Video (Full Screen) */}
+        {/* Remote Video */}
         <video
           ref={remoteVideoRef}
           autoPlay
@@ -528,7 +542,7 @@ export function ChatRoom({
           className="absolute inset-0 w-full h-full object-cover bg-gray-800"
         />
 
-        {/* Local Video (Picture in Picture) */}
+        {/* Local Video */}
         <div className="absolute top-4 right-4 w-64 h-48 bg-gray-800 rounded-xl overflow-hidden shadow-2xl border-2 border-gray-700">
           <video
             ref={localVideoRef}
@@ -630,7 +644,7 @@ export function ChatRoom({
                 type="text"
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
                 placeholder="Type a message..."
                 className="flex-1 px-4 py-2 bg-gray-700 text-white rounded-full outline-none focus:ring-2 focus:ring-purple-500"
               />

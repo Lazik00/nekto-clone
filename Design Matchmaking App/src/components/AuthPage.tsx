@@ -21,7 +21,7 @@ export function AuthPage({ onLogin }: AuthPageProps) {
 
     try {
       const endpoint = mode === 'login' ? '/api/v1/login' : '/api/v1/register';
-      const body = mode === 'login' 
+      const body = mode === 'login'
         ? { email, password }
         : { email, username, password };
 
@@ -35,17 +35,32 @@ export function AuthPage({ onLogin }: AuthPageProps) {
 
       const data = await response.json();
 
-      if (response.ok) {
-        onLogin(data.access_token, data.refresh_token);
-      } else {
+      if (!response.ok) {
         setError(data.detail || 'Authentication failed');
+        setLoading(false);
+        return;
       }
+
+      // ======================
+      //   TOKEN STANDARD FIX
+      // ======================
+      const accessToken = data.access_token;
+      const refreshToken = data.refresh_token;
+
+      // Save tokens with correct naming
+      localStorage.setItem("access_token", accessToken);
+      localStorage.setItem("refresh_token", refreshToken);
+
+      // Pass tokens to App
+      onLogin(accessToken, refreshToken);
+
     } catch (err) {
       setError('Network error. Please try again.');
     } finally {
       setLoading(false);
     }
   };
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-600 via-pink-500 to-red-500 flex items-center justify-center p-4">

@@ -63,10 +63,10 @@ class Settings(BaseSettings):
         "https://127.0.0.1:5173",
         "https://127.0.0.1:8443",
         # Network IP (192.168.x.x)
-        "http://192.168.13.118:5174",
-        "https://192.168.13.118:5173",
-        "http://192.168.13.118:8000",
-        "https://192.168.13.118:8443",
+        "http://badgatewaydev.tech",
+        "https://badgatewaydev.tech",
+        "http://badgatewaydev.tech",
+        "https://badgatewaydev.tech",
         # Allow all for development (remove in production)
         "*"
     ]

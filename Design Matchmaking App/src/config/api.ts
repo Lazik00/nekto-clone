@@ -5,10 +5,10 @@ const getEnvVar = (key: string, defaultValue: string): string => {
 
 export const API_CONFIG = {
   // Backend server URL
-  BASE_URL: getEnvVar('VITE_API_URL', 'https://192.168.13.118:8443'),
+  BASE_URL: getEnvVar('VITE_API_URL', 'https://badgatewaydev.tech'),
 
   // WebSocket URL (ws:// yoki wss://)
-  WS_URL: getEnvVar('VITE_WS_URL', 'wss://192.168.13.118:8443'),
+  WS_URL: getEnvVar('VITE_WS_URL', 'wss:/badgatewaydev.tech'),
 
   // API endpoints
   endpoints: {

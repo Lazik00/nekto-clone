@@ -37,6 +37,9 @@ app = FastAPI(
     description="A complete random video chat application",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
 )
 
 # Middleware
@@ -69,6 +72,7 @@ def custom_openapi():
         version="1.0.0",
         description="A complete random video chat application",
         routes=app.routes,
+
     )
 
     # Ensure components exists

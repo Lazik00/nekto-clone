@@ -10,36 +10,27 @@ export const WS_URL = "wss://badgatewaydev.tech";
 
 // API endpoint paths
 export const API_ENDPOINTS = {
-  // Auth
   login: "/api/v1/login",
   register: "/api/v1/register",
   me: "/api/v1/me",
 
-  // Matching
   find: "/api/v1/find",
   cancel: "/api/v1/cancel",
   queueStatus: "/api/v1/queue-status",
 
-  // Chat WS endpoint
   chatWs: "/api/v1/chat/ws",
 
-  // Reports
   createReport: "/api/v1/create",
-
-  // Block system
-  block: "/match/block",
+  block: "/match/block"
 };
 
-// Build a full API URL
+// Build full API URL
 export const getApiUrl = (endpoint: string): string => {
   return `${BASE_URL}${endpoint}`;
 };
 
-// Build a full WebSocket URL
-// Build a full WebSocket URL (correct)
-export const getWsUrl = (sessionId: string, token: string): string => {
+// Build full WebSocket URL
+export const getWsUrl = (sessionId: string): string => {
+  const token = localStorage.getItem("access_token"); // ✔ ALWAYS correct key
   return `${WS_URL}${API_ENDPOINTS.chatWs}/${sessionId}?token=${token}`;
 };
-
-
-

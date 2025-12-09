@@ -94,18 +94,13 @@ export function ChatRoom({
         localVideoRef.current.srcObject = stream;
       }
 
-      const token = localStorage.getItem("access_token");
+    const wsUrl = getWsUrl(sessionId); // ✔ universal, token ichida
+    console.log("WS URL:", wsUrl);
 
-      if (!token) {
-          console.error("❌ Token not found in localStorage");
-          setConnectionStatus("disconnected");
-          return;
-      }
+    const websocket = new WebSocket(wsUrl);
+    setWs(websocket);
 
 
-      const wsUrl = getWsUrl(sessionId, token);
-      console.log("🔗 WS URL:", wsUrl.replace(token, "HIDDEN"));
-      const websocket = new WebSocket(wsUrl);
 
 
 

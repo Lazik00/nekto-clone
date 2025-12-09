@@ -28,119 +28,139 @@ export default function App() {
   const [matchUser, setMatchUser] = useState<User | null>(null);
 
   useEffect(() => {
-    // Check for stored tokens on mount
-    const storedAccessToken = localStorage.getItem('access_token');
-    const storedRefreshToken = localStorage.getItem('refresh_token');
-    
-    if (storedAccessToken && storedRefreshToken) {
-      setAccessToken(storedAccessToken);
-      setRefreshToken(storedRefreshToken);
-      fetchUserProfile(storedAccessToken);
+    const storedAccess = localStorage.getItem("access_token");
+    const storedRefresh = localStorage.getItem("refresh_token");
+
+    if (storedAccess && storedRefresh) {
+      setAccessToken(storedAccess);
+      setRefreshToken(storedRefresh);
+      fetchUserProfile(storedAccess);
     }
   }, []);
 
+  // ===============================
+  //    USER PROFILE FETCHER
+  // ===============================
   const fetchUserProfile = async (token: string) => {
     try {
-      const response = await fetch(getApiUrl('/api/v1/me'), {
+      const response = await fetch(getApiUrl("/api/v1/me"), {
         headers: {
-          'Authorization': `Bearer ${token}`
-        }
+          Authorization: `Bearer ${token}`,
+        },
       });
-      
-      if (response.ok) {
-        const userData = await response.json();
-        setUser(userData);
-        setView('home');
-      } else {
+
+      if (!response.ok) {
         handleLogout();
+        return;
       }
-    } catch (error) {
-      console.error('Failed to fetch user profile:', error);
+
+      const data = await response.json();
+      setUser(data);
+      setView("home");
+    } catch (err) {
+      console.error("Profile load failed", err);
       handleLogout();
     }
   };
 
+  // ===============================
+  //             LOGIN
+  // ===============================
   const handleLogin = (token: string, refresh: string) => {
+    localStorage.setItem("access_token", token);
+    localStorage.setItem("refresh_token", refresh);
+
     setAccessToken(token);
     setRefreshToken(refresh);
-    localStorage.setItem('access_token', token);
-    localStorage.setItem('refresh_token', refresh);
+
     fetchUserProfile(token);
   };
 
+  // ===============================
+  //            LOGOUT
+  // ===============================
   const handleLogout = () => {
     setAccessToken(null);
     setRefreshToken(null);
     setUser(null);
     setSessionId(null);
     setMatchUser(null);
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    setView('auth');
+
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+
+    setView("auth");
   };
 
+  // ===============================
+  //         MATCH FOUND
+  // ===============================
   const handleMatchFound = (session: string, match: User) => {
     setSessionId(session);
     setMatchUser(match);
-    setView('chat');
+    setView("chat");
   };
 
   const handleEndChat = () => {
     setSessionId(null);
     setMatchUser(null);
-    setView('home');
+    setView("home");
   };
 
-  const handleUpdateProfile = (updatedUser: User) => {
-    setUser(updatedUser);
+  const handleUpdateProfile = (updated: User) => {
+    setUser(updated);
   };
 
-  if (view === 'auth') {
+  // ===============================
+  //        VIEW RENDER LOGIC
+  // ===============================
+
+  if (view === "auth") {
     return <AuthPage onLogin={handleLogin} />;
   }
 
-  if (view === 'chat' && sessionId && matchUser && accessToken) {
+  if (view === "chat" && sessionId && matchUser && accessToken && user) {
     return (
       <ChatRoom
         sessionId={sessionId}
         accessToken={accessToken}
-        currentUser={user!}
+        currentUser={user}
         matchUser={matchUser}
         onEndChat={handleEndChat}
-        onBack={() => setView('home')}
+        onBack={() => setView("home")}
       />
     );
   }
 
-  if (view === 'profile' && user && accessToken) {
+  if (view === "profile" && user && accessToken) {
     return (
       <ProfilePage
         user={user}
         accessToken={accessToken}
-        onBack={() => setView('home')}
+        onBack={() => setView("home")}
         onUpdateProfile={handleUpdateProfile}
       />
     );
   }
 
-  if (view === 'settings' && accessToken) {
+  if (view === "settings" && accessToken) {
     return (
       <SettingsPage
         accessToken={accessToken}
-        onBack={() => setView('home')}
+        onBack={() => setView("home")}
         onLogout={handleLogout}
       />
     );
   }
 
-  if (view === 'home' && user && accessToken) {
+  if (view === "home" && user && accessToken) {
     return (
       <HomePage
         user={user}
         accessToken={accessToken}
         onMatchFound={handleMatchFound}
-        onNavigateToProfile={() => setView('profile')}
-        onNavigateToSettings={() => setView('settings')}
+        onNavigateToProfile={() => setView("profile")}
+        onNavigateToSettings={() => setView("settings")}
         onLogout={handleLogout}
       />
     );

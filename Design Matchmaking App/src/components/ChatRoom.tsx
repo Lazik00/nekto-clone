@@ -39,7 +39,8 @@ export function ChatRoom({
   onEndChat,
   onBack
 }: ChatRoomProps) {
-  const [ws, setWs] = useState<WebSocket | null>(null);
+  // WebSocket UI monitoring only (optional)
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [showChat, setShowChat] = useState(false);
@@ -48,15 +49,16 @@ export function ChatRoom({
   const [showReportMenu, setShowReportMenu] = useState(false);
   const [reportReason, setReportReason] = useState('');
   const [reportDescription, setReportDescription] = useState('');
-  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
 
+  // 🔑 Asosiy ref-lar
+  const wsRef = useRef<WebSocket | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // deterministic caller: faqat bitta taraf offer yuboradi
+  // faqat bitta taraf offer yuborishi uchun
   const isCaller = currentUser.id < matchUser.id;
 
   useEffect(() => {
@@ -78,6 +80,7 @@ export function ChatRoom({
         throw new Error('Your browser does not support camera/microphone access. Please use a modern browser like Chrome, Firefox, or Edge.');
       }
 
+      // 🔹 Kamera + mikrofon
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
@@ -96,18 +99,15 @@ export function ChatRoom({
         localVideoRef.current.srcObject = stream;
       }
 
-      // 🔐 WS URL + token
-        const wsUrl = getWsUrl(sessionId); // ✔ universal, token ichida
-        console.log("WS URL:", wsUrl);
-
-        const websocket = new WebSocket(wsUrl);
-        setWs(websocket);
-
+      // 🔹 WS URL (token bilan)
+      const wsUrl = getWsUrl(sessionId);
+      console.log("WS URL:", wsUrl);
+      const websocket = new WebSocket(wsUrl);
+      wsRef.current = websocket;
 
       websocket.onopen = () => {
         console.log('✅ WebSocket connected successfully');
         setConnectionStatus('connected');
-        setWs(websocket);
       };
 
       websocket.onmessage = (event) => {
@@ -126,9 +126,9 @@ export function ChatRoom({
 
         if (error.type === 'error') {
           if (window.location.protocol === 'https:') {
-            errorMessage += 'Possible SSL/Certificate issue (self-signed). Try opening the WebSocket URL directly in the browser and accept the certificate.';
+            errorMessage += 'Possible SSL/Certificate issue (self-signed). Try opening the WebSocket URL directly and accept the certificate.';
           } else {
-            errorMessage += 'Check your internet connection and make sure backend is running.';
+            errorMessage += 'Check your internet connection and ensure the backend is running.';
           }
         }
 
@@ -150,9 +150,9 @@ export function ChatRoom({
       } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
         errorMessage += 'No camera or microphone found. Connect a device and try again.';
       } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
-        errorMessage += 'Camera/microphone is already in use by another application.';
+        errorMessage += 'Camera or microphone is already in use by another application.';
       } else if (error.name === 'OverconstrainedError') {
-        errorMessage += 'Device does not match required constraints (resolution, etc). Try another device.';
+        errorMessage += 'Device does not match required constraints. Try a different camera/mic.';
       } else if (error.name === 'SecurityError') {
         errorMessage += 'Access blocked by browser security. Use HTTPS or localhost.';
       } else if (error.message) {
@@ -168,7 +168,7 @@ export function ChatRoom({
 
   const handleWebSocketMessage = async (data: any) => {
     switch (data.type) {
-      // 🔧 backend: type = "stun_turn"
+      // 🔧 backend yuboradigan nom: "stun_turn"
       case 'stun_turn':
         console.log('[WS] STUN/TURN config received', data);
         initializePeerConnection(data);
@@ -183,22 +183,22 @@ export function ChatRoom({
         }]);
         break;
 
+      // backend → client
       case 'webrtc_signal':
-        // server → client
         handleWebRTCSignal(data);
         break;
 
       case 'user_connected':
-        console.log('User connected:', data.user_id);
+        console.log('[WS] User connected:', data.user_id);
         break;
 
       case 'user_disconnected':
-        console.log('User disconnected:', data.user_id);
+        console.log('[WS] User disconnected:', data.user_id);
         handleUserDisconnected();
         break;
 
       case 'session_ended':
-        console.log('Session ended:', data.reason);
+        console.log('[WS] Session ended:', data.reason);
         handleSessionEnded();
         break;
 
@@ -222,37 +222,42 @@ export function ChatRoom({
     console.log('[RTC] Creating RTCPeerConnection with config:', configuration);
     const pc = new RTCPeerConnection(configuration);
 
-    // Local tracks
+    // local tracklar
     localStreamRef.current?.getTracks().forEach(track => {
       pc.addTrack(track, localStreamRef.current!);
     });
 
-    // Remote stream
+    // remote video
     pc.ontrack = (event) => {
-      console.log('[RTC] ontrack', event.streams);
+      console.log('[RTC] ontrack streams:', event.streams);
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
       }
     };
 
-    // ICE candidates → send to other peer
+    // ICE candidate → boshqa peerga yuborish
     pc.onicecandidate = (event) => {
-      if (event.candidate && ws) {
-        console.log('[RTC] Sending ICE candidate');
-        ws.send(JSON.stringify({
-          type: 'candidate',          // 🔥 backend expects this
-          data: event.candidate
-        }));
+      if (event.candidate) {
+        const socket = wsRef.current;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          console.log('[RTC] Sending ICE candidate');
+          socket.send(JSON.stringify({
+            type: 'candidate',      // backend shuni kutyapti
+            data: event.candidate
+          }));
+        } else {
+          console.warn('[RTC] ICE candidate, but WebSocket not ready');
+        }
       }
     };
 
     pc.onconnectionstatechange = () => {
-      console.log('[RTC] state =', pc.connectionState);
+      console.log('[RTC] connectionState =', pc.connectionState);
     };
 
     peerConnectionRef.current = pc;
 
-    // 🔥 faqat "caller" offer yaratadi
+    // faqat caller offer yuboradi
     if (isCaller) {
       createAndSendOffer(pc);
     } else {
@@ -266,12 +271,15 @@ export function ChatRoom({
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      if (ws) {
+      const socket = wsRef.current;
+      if (socket && socket.readyState === WebSocket.OPEN) {
         console.log('[RTC] Sending offer via WS');
-        ws.send(JSON.stringify({
-          type: 'offer',   // 🔥 backend expects this
+        socket.send(JSON.stringify({
+          type: 'offer',   // backend kutayotgan type
           data: offer
         }));
+      } else {
+        console.warn('[RTC] Cannot send offer, WS not open');
       }
     } catch (error) {
       console.error('Failed to create offer:', error);
@@ -281,7 +289,7 @@ export function ChatRoom({
   const handleWebRTCSignal = async (data: any) => {
     const pc = peerConnectionRef.current;
     if (!pc) {
-      console.warn('[RTC] No peerConnectionRef yet');
+      console.warn('[RTC] No peerConnectionRef yet for signal:', data);
       return;
     }
 
@@ -293,12 +301,15 @@ export function ChatRoom({
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
 
-          if (ws) {
+          const socket = wsRef.current;
+          if (socket && socket.readyState === WebSocket.OPEN) {
             console.log('[RTC] Sending answer');
-            ws.send(JSON.stringify({
-              type: 'answer',   // 🔥 backend expects this
+            socket.send(JSON.stringify({
+              type: 'answer',
               data: answer
             }));
+          } else {
+            console.warn('[RTC] Cannot send answer, WS not open');
           }
           break;
 
@@ -321,21 +332,22 @@ export function ChatRoom({
   };
 
   const sendMessage = () => {
-    if (inputMessage.trim() && ws) {
-      ws.send(JSON.stringify({
-        type: 'chat_message',
-        content: inputMessage
-      }));
+    const socket = wsRef.current;
+    if (!inputMessage.trim() || !socket || socket.readyState !== WebSocket.OPEN) return;
 
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        sender_id: currentUser.id,
-        content: inputMessage,
-        timestamp: new Date().toISOString()
-      }]);
+    socket.send(JSON.stringify({
+      type: 'chat_message',
+      content: inputMessage
+    }));
 
-      setInputMessage('');
-    }
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      sender_id: currentUser.id,
+      content: inputMessage,
+      timestamp: new Date().toISOString()
+    }]);
+
+    setInputMessage('');
   };
 
   const toggleVideo = () => {
@@ -369,8 +381,9 @@ export function ChatRoom({
   };
 
   const endSession = (reason: string) => {
-    if (ws) {
-      ws.send(JSON.stringify({
+    const socket = wsRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
         type: 'end_session',
         reason
       }));
@@ -435,18 +448,19 @@ export function ChatRoom({
   };
 
   const cleanup = () => {
-    // Close WebSocket
-    if (ws) {
-      ws.close();
+    // WS yopish
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
     }
 
-    // Close peer connection
+    // PeerConnection yopish
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }
 
-    // Stop local media tracks
+    // Local tracklarni to‘xtatish
     localStreamRef.current?.getTracks().forEach(track => track.stop());
     localStreamRef.current = null;
   };

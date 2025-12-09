@@ -147,6 +147,29 @@ async def get_queue_position(user_id: str) -> int:
 
     return -1
 
+async def is_user_in_queue(user_id: str) -> bool:
+    """
+    Check whether the user is currently in the matchmaking queue.
+    Works with both Redis and in-memory fallback.
+    """
+    queue_key = "match_queue"
+    redis = await get_redis()
+
+    # --- Redis mode ---
+    if redis:
+        try:
+            members = await redis.zrange(queue_key, 0, -1)
+            for member in members:
+                data = json.loads(member)
+                if data["user_id"] == user_id:
+                    return True
+            return False
+        except Exception as e:
+            logger.error(f"Redis error in is_user_in_queue: {str(e)}")
+
+    # --- In-Memory fallback ---
+    return user_id in in_memory_cache[queue_key]
+
 
 async def find_match(
     user_id: str,

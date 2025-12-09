@@ -95,10 +95,11 @@ export function ChatRoom({
       }
 
       // Connect to WebSocket
-      const wsUrl = getWsUrl(`/api/v1/chat/ws/${sessionId}?token=${accessToken}`);
-      console.log('Attempting WebSocket connection to:', wsUrl.replace(accessToken, 'TOKEN_HIDDEN'));
+      const wsUrl = getWsUrl(sessionId, accessToken);
+      console.log("WS:", wsUrl.replace(accessToken, "HIDDEN"));
 
       const websocket = new WebSocket(wsUrl);
+
 
       websocket.onopen = () => {
         console.log('✅ WebSocket connected successfully');

@@ -1,12 +1,12 @@
 
-  import { defineConfig } from 'vite';
-  import react from '@vitejs/plugin-react-swc';
-  import path from 'path';
-  import * as basicSslModule from '@vitejs/plugin-basic-ssl';
-  const basicSsl = (basicSslModule as any).default || basicSslModule;
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react-swc';
+import path from 'path';
+import * as basicSslModule from '@vitejs/plugin-basic-ssl';
+const basicSsl = (basicSslModule as any).default || basicSslModule;
 
-  export default defineConfig({
-    plugins: [react(), basicSsl()],
+export default defineConfig({
+  plugins: [react(), ...(process.env.VITE_HTTPS === 'true' ? [basicSsl()] : [])],
     resolve: {
       extensions: ['.js', '.jsx', '.ts', '.tsx', '.json'],
       alias: {

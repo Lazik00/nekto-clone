@@ -791,16 +791,43 @@ useEffect(() => {
 
       {/* Video Area */}
 <div
-  className="flex-grow relative overflow-hidden"
-  style={{ height: "calc(80vh - 30px)" }}
+  className="flex-grow relative overflow-hidden bg-black"
+  style={{ height: "calc(100vh - 180px)" }}
 >
 
   {aspectMode === "wide" ? (
-    /* === 16:9 — YONMA-YON === */
-    <div className="flex w-full h-full">
+    /* === 16:9 — YONMA-YON (LANDSCAPE) === */
+    /* A | B — 50/50 SPLIT */
+    <div className="flex w-full h-full relative">
 
-      {/* Remote */}
-      <div className="w-full h-full bg-black">
+      {/* Remote (A) — 50% width */}
+      <div className="w-1/2 h-full bg-black flex items-center justify-center border-r border-gray-700">
+        <video
+          ref={remoteVideoRef}
+          autoPlay
+          playsInline
+          className="max-w-full max-h-full object-contain"
+        />
+      </div>
+
+      {/* Local (B) — 50% width */}
+      <div className="w-1/2 h-full bg-black flex items-center justify-center">
+        <video
+          ref={localVideoRef}
+          autoPlay
+          playsInline
+          muted
+          className="max-w-full max-h-full object-contain mirror"
+        />
+      </div>
+
+    </div>
+  ) : (
+    /* === 9:16 — PORTRAIT (VERTICAL) === */
+    <div className="flex flex-col w-full h-full relative">
+
+      {/* Remote — 60% height */}
+      <div className="flex-[6] w-full bg-black flex items-center justify-center overflow-hidden">
         <video
           ref={remoteVideoRef}
           autoPlay
@@ -809,95 +836,74 @@ useEffect(() => {
         />
       </div>
 
-      {/* Local */}
-      <div className="w-full h-1/2 bg-black absolute top-4 right-4 border-4 border-gray-800 rounded-lg overflow-hidden shadow-lg" style={{ width: '30%', height: '30%' }}>
+      {/* Divider */}
+      <div className="h-1 bg-gray-700"></div>
+
+      {/* Local — 40% height (fixed) */}
+      <div className="flex-[4] w-full bg-black flex items-center justify-center overflow-hidden">
         <video
           ref={localVideoRef}
           autoPlay
           playsInline
+
           muted
           className="w-full h-full object-cover mirror"
         />
       </div>
 
     </div>
-  ) : (
-    /* === 9:16 — VERTIKAL === */
-    <div className="flex flex-col w-full h-full">
-
-  {/* REMOTE — 60% HEIGHT */}
-  <div className="h-1/2 w-full bg-black">
-    <video
-      ref={remoteVideoRef}
-      autoPlay
-      playsInline
-      className="w-1/2 h-full object-cover"
-    />
-  </div>
-
-  {/* LOCAL — 40% HEIGHT */}
-  <div className="h-40 w-full bg-black">
-    <video
-      ref={localVideoRef}
-      autoPlay
-      playsInline
-      muted
-      className="w-full h-full object-cover mirror"
-    />
-  </div>
-
-</div>
   )}
 
-        {/* Controls */}
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-4">
-          <button
-            onClick={toggleVideo}
-            className={`w-14 h-14 rounded-full flex items-center justify-center transition shadow-lg ${
-              videoEnabled
-                ? 'bg-gray-700 hover:bg-gray-600 text-white'
-                : 'bg-red-600 hover:bg-red-700 text-white'
-            }`}
-          >
-            {videoEnabled ? (
-              <VideoIcon className="w-6 h-6" />
-            ) : (
-              <VideoOff className="w-6 h-6" />
-            )}
-          </button>
+      </div>
 
-          <button
-            onClick={toggleAudio}
-            className={`w-14 h-14 rounded-full flex items-center justify-center transition shadow-lg ${
-              audioEnabled
-                ? 'bg-gray-700 hover:bg-gray-600 text-white'
-                : 'bg-red-600 hover:bg-red-700 text-white'
-            }`}
-          >
-            {audioEnabled ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
-          </button>
+      {/* Controls Footer — Fixed at bottom */}
+      <div className="bg-gray-800 border-t border-gray-700 px-4 py-4 flex items-center justify-center gap-3">
+        <button
+          onClick={toggleVideo}
+          className={`w-12 h-12 rounded-full flex items-center justify-center transition shadow-lg ${
+            videoEnabled
+              ? 'bg-gray-700 hover:bg-gray-600 text-white'
+              : 'bg-red-600 hover:bg-red-700 text-white'
+          }`}
+        >
+          {videoEnabled ? (
+            <VideoIcon className="w-5 h-5" />
+          ) : (
+            <VideoOff className="w-5 h-5" />
+          )}
+        </button>
 
-          <button
-            onClick={() => setShowChat(!showChat)}
-            className="w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition shadow-lg"
-          >
-            <MessageSquare className="w-6 h-6" />
-          </button>
+        <button
+          onClick={toggleAudio}
+          className={`w-12 h-12 rounded-full flex items-center justify-center transition shadow-lg ${
+            audioEnabled
+              ? 'bg-gray-700 hover:bg-gray-600 text-white'
+              : 'bg-red-600 hover:bg-red-700 text-white'
+          }`}
+        >
+          {audioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+        </button>
 
-          <button
-            onClick={handleNext}
-            className="w-14 h-14 rounded-full bg-green-600 hover:bg-green-700 text-white flex items-center justify-center transition shadow-lg"
-          >
-            <SkipForward className="w-6 h-6" />
-          </button>
+        <button
+          onClick={() => setShowChat(!showChat)}
+          className="w-12 h-12 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition shadow-lg"
+        >
+          <MessageSquare className="w-5 h-5" />
+        </button>
 
-          <button
-            onClick={handleEndSession}
-            className="w-14 h-14 rounded-full bg-red-600 hover:bg-red-700 text-white flex items-center justify-center transition shadow-lg"
-          >
-            <X className="w-6 h-6" />
-          </button>
-        </div>
+        <button
+          onClick={handleNext}
+          className="w-12 h-12 rounded-full bg-green-600 hover:bg-green-700 text-white flex items-center justify-center transition shadow-lg"
+        >
+          <SkipForward className="w-5 h-5" />
+        </button>
+
+        <button
+          onClick={handleEndSession}
+          className="w-12 h-12 rounded-full bg-red-600 hover:bg-red-700 text-white flex items-center justify-center transition shadow-lg"
+        >
+          <X className="w-5 h-5" />
+        </button>
       </div>
 
       {/* Chat Panel */}

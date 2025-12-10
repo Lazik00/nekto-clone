@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
+from pathlib import Path
 import logging
 
 from .config import settings
@@ -56,7 +58,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+# Create uploads directory if it doesn't exist
+uploads_dir = Path("uploads")
+uploads_dir.mkdir(exist_ok=True)
+(uploads_dir / "avatars").mkdir(exist_ok=True)
+
+# Mount static files for avatars
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.include_router(auth.router, prefix=settings.API_V1_PREFIX, tags=["Authentication"])
 app.include_router(match.router, prefix=settings.API_V1_PREFIX, tags=["Matchmaking"])
 app.include_router(chat.router, prefix=settings.API_V1_PREFIX, tags=["Chat"])

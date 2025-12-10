@@ -8,6 +8,7 @@ class MatchRequest(BaseModel):
     gender_preference: Optional[str] = None
     age_min: Optional[int] = Field(None, ge=13)
     age_max: Optional[int] = Field(None, le=120)
+    country_preference: Optional[str] = None
 
 
 class MatchResponse(BaseModel):

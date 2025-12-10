@@ -273,6 +273,11 @@ async def check_preferences(
     if "age_max" in preferences and user.age and user.age > preferences["age_max"]:
         return False
 
+    # Check country preference
+    if "country_preference" in preferences and preferences["country_preference"]:
+        if user.country != preferences["country_preference"]:
+            return False
+
     return True
 
 

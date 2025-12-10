@@ -1,8 +1,11 @@
-from fastapi import APIRouter, HTTPException, status, Depends, Body
+from fastapi import APIRouter, HTTPException, status, Depends, Body, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import timedelta
 import logging
+import os
+import shutil
+from pathlib import Path
 
 from app.db import get_db
 from app.deps import get_user_from_token
@@ -88,19 +91,20 @@ async def register(
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
-    credentials: UserLogin,
+    email: str = Form(...),
+    password: str = Form(...),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     """Login user with email and password"""
 
     # Validate input
-    if not credentials.email or not credentials.password:
+    if not email or not password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email and password are required",
         )
 
-    user = await authenticate_user(credentials.email, credentials.password, session)
+    user = await authenticate_user(email, password, session)
 
     if not user:
         raise HTTPException(
@@ -185,30 +189,73 @@ async def get_me(
 
 @router.put("/me", response_model=UserResponse, dependencies=[Depends(get_user_from_token)])
 async def update_profile(
-    update_data: UserUpdate,
     current_user: User = Depends(get_user_from_token),
     session: AsyncSession = Depends(get_db),
+    display_name: str = Form(None),
+    bio: str = Form(None),
+    age: int = Form(None),
+    gender: str = Form(None),
+    country: str = Form(None),
+    avatar: UploadFile = File(None),
 ) -> User:
-    """Update current user profile"""
+    """Update current user profile with form data and file upload"""
+
+    # Create uploads directory if it doesn't exist
+    uploads_dir = Path("uploads/avatars")
+    uploads_dir.mkdir(parents=True, exist_ok=True)
 
     # Update fields - only non-null values
-    if update_data.display_name:
-        current_user.display_name = update_data.display_name
+    if display_name:
+        current_user.display_name = display_name
 
-    if update_data.bio is not None:
-        current_user.bio = update_data.bio
+    if bio is not None:
+        current_user.bio = bio
 
-    if update_data.age:
-        current_user.age = update_data.age
+    if age:
+        current_user.age = age
 
-    if update_data.gender:
-        current_user.gender = update_data.gender
+    if gender:
+        current_user.gender = gender
 
-    if update_data.country:
-        current_user.country = update_data.country
+    if country:
+        current_user.country = country
 
-    if update_data.avatar_url:
-        current_user.avatar_url = update_data.avatar_url
+    # Handle file upload
+    if avatar:
+        # Validate file type
+        allowed_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+        file_ext = Path(avatar.filename).suffix.lower()
+
+        if file_ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File type not allowed. Allowed types: {', '.join(allowed_extensions)}",
+            )
+
+        # Validate file size (max 5MB)
+        contents = await avatar.read()
+        if len(contents) > 5 * 1024 * 1024:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File size exceeds 5MB limit",
+            )
+
+        # Save file with user ID as name
+        filename = f"{current_user.id}{file_ext}"
+        file_path = uploads_dir / filename
+
+        # Delete old avatar if exists
+        if current_user.avatar_url:
+            old_file_path = Path(current_user.avatar_url.replace("/uploads/avatars/", "uploads/avatars/"))
+            if old_file_path.exists():
+                old_file_path.unlink()
+
+        # Save new avatar
+        with open(file_path, "wb") as f:
+            f.write(contents)
+
+        current_user.avatar_url = f"/uploads/avatars/{filename}"
+        logger.info(f"User avatar uploaded: {current_user.id} -> {filename}")
 
     session.add(current_user)
     await session.commit()

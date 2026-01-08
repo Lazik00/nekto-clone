@@ -91,20 +91,19 @@ async def register(
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
-    email: str = Form(...),
-    password: str = Form(...),
+    user_data: UserLogin,
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     """Login user with email and password"""
 
     # Validate input
-    if not email or not password:
+    if not user_data.email or not user_data.password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email and password are required",
         )
 
-    user = await authenticate_user(email, password, session)
+    user = await authenticate_user(user_data.email, user_data.password, session)
 
     if not user:
         raise HTTPException(

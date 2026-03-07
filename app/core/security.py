@@ -1,113 +1,119 @@
-import logging
-from typing import Optional
-from datetime import datetime, timedelta
-from jose import JWTError, jwt
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 import hashlib
+import logging
 import secrets
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from jose import JWTError, jwt
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..models import User
 
-# Logging
 logger = logging.getLogger(__name__)
 
-# Password hashing constants
-HASH_ALGORITHM = "sha256"
-SALT_LENGTH = 32
+HASH_ALGORITHM = "pbkdf2_sha256"
+LEGACY_HASH_ALGORITHM = "sha256"
+PBKDF2_ITERATIONS = 390_000
+SALT_LENGTH = 16
 
 
 def get_password_hash(password: str) -> str:
-    """
-    Hash a password with SHA256 + salt
-    Format: algorithm$salt$hash
+    """Hash password with PBKDF2-HMAC-SHA256.
+
+    Format: pbkdf2_sha256$iterations$salt_hex$hash_hex
     """
     if not password:
         raise ValueError("Password cannot be empty")
 
-    salt = secrets.token_hex(SALT_LENGTH // 2)  # Generate random salt
-    hash_obj = hashlib.sha256((salt + password).encode())
-    password_hash = hash_obj.hexdigest()
-    return f"{HASH_ALGORITHM}${salt}${password_hash}"
+    salt = secrets.token_bytes(SALT_LENGTH)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        PBKDF2_ITERATIONS,
+    )
+    return f"{HASH_ALGORITHM}${PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def _verify_legacy_hash(plain_password: str, hashed_password: str) -> bool:
+    """Backward compatibility with legacy format: sha256$salt$hash."""
+    try:
+        algorithm, salt_hex, stored_hash = hashed_password.split("$", 2)
+        if algorithm != LEGACY_HASH_ALGORITHM:
+            return False
+
+        candidate_hash = hashlib.sha256((salt_hex + plain_password).encode("utf-8")).hexdigest()
+        return secrets.compare_digest(candidate_hash, stored_hash)
+    except (ValueError, AttributeError):
+        return False
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """
-    Verify password against hash
-    Expected format: algorithm$salt$hash
-    """
+    """Verify password against supported hash formats."""
+    if not plain_password or not hashed_password:
+        return False
+
     try:
-        if not plain_password or not hashed_password:
-            return False
+        if hashed_password.startswith(f"{HASH_ALGORITHM}$"):
+            algorithm, iterations_raw, salt_hex, stored_hash = hashed_password.split("$", 3)
+            if algorithm != HASH_ALGORITHM:
+                return False
 
-        algorithm, salt, stored_hash = hashed_password.split('$', 2)
+            iterations = int(iterations_raw)
+            salt = bytes.fromhex(salt_hex)
+            digest = hashlib.pbkdf2_hmac(
+                "sha256",
+                plain_password.encode("utf-8"),
+                salt,
+                iterations,
+            ).hex()
+            return secrets.compare_digest(digest, stored_hash)
 
-        if algorithm != HASH_ALGORITHM:
-            logger.warning(f"Invalid hash algorithm: {algorithm}")
-            return False
-
-        # Recalculate hash with same salt
-        hash_obj = hashlib.sha256((salt + plain_password).encode())
-        calculated_hash = hash_obj.hexdigest()
-
-        # Constant-time comparison
-        return secrets.compare_digest(calculated_hash, stored_hash)
-    except (ValueError, AttributeError) as e:
-        logger.warning(f"Password verification error: {str(e)}")
+        return _verify_legacy_hash(plain_password, hashed_password)
+    except (ValueError, TypeError) as exc:
+        logger.warning("Password verification error: %s", exc)
         return False
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Create JWT access token"""
+    """Create JWT access token."""
     if not data or "sub" not in data:
         raise ValueError("Token data must include 'sub' (user_id)")
 
     to_encode = data.copy()
-
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + (
+        expires_delta if expires_delta else timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
+    )
 
     to_encode.update({"exp": expire, "type": "access"})
 
-    try:
-        encoded_jwt = jwt.encode(
-            to_encode,
-            settings.JWT_SECRET,
-            algorithm=settings.JWT_ALGORITHM
-        )
-        return encoded_jwt
-    except Exception as e:
-        logger.error(f"Token creation error: {str(e)}")
-        raise
+    return jwt.encode(
+        to_encode,
+        settings.JWT_SECRET,
+        algorithm=settings.JWT_ALGORITHM,
+    )
 
 
 def create_refresh_token(data: dict) -> str:
-    """Create JWT refresh token"""
+    """Create JWT refresh token."""
     if not data or "sub" not in data:
         raise ValueError("Token data must include 'sub' (user_id)")
 
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(days=settings.JWT_REFRESH_EXPIRE_DAYS)
-
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
 
-    try:
-        encoded_jwt = jwt.encode(
-            to_encode,
-            settings.JWT_SECRET,
-            algorithm=settings.JWT_ALGORITHM
-        )
-        return encoded_jwt
-    except Exception as e:
-        logger.error(f"Refresh token creation error: {str(e)}")
-        raise
+    return jwt.encode(
+        to_encode,
+        settings.JWT_SECRET,
+        algorithm=settings.JWT_ALGORITHM,
+    )
 
 
 def verify_token(token: str, token_type: str = "access") -> Optional[dict]:
-    """Verify JWT token and return payload"""
+    """Verify JWT token and return payload."""
     try:
         if not token:
             return None
@@ -115,36 +121,34 @@ def verify_token(token: str, token_type: str = "access") -> Optional[dict]:
         payload = jwt.decode(
             token,
             settings.JWT_SECRET,
-            algorithms=[settings.JWT_ALGORITHM]
+            algorithms=[settings.JWT_ALGORITHM],
         )
 
-        # Verify token type
         if payload.get("type") != token_type:
-            logger.warning(f"Token type mismatch: expected {token_type}, got {payload.get('type')}")
+            logger.warning(
+                "Token type mismatch: expected %s, got %s",
+                token_type,
+                payload.get("type"),
+            )
             return None
 
-        # Verify sub (user_id) exists
         user_id: str = payload.get("sub")
         if not user_id:
             logger.warning("Token missing 'sub' claim")
             return None
 
         return payload
-    except JWTError as e:
-        logger.debug(f"Token verification failed: {str(e)}")
+    except JWTError as exc:
+        logger.debug("Token verification failed: %s", exc)
         return None
-    except Exception as e:
-        logger.error(f"Unexpected error in token verification: {str(e)}")
+    except Exception as exc:  # pragma: no cover
+        logger.error("Unexpected error in token verification: %s", exc)
         return None
 
 
-async def get_current_user(
-    token: str,
-    session: AsyncSession
-) -> Optional[User]:
-    """Get current user from JWT token"""
+async def get_current_user(token: str, session: AsyncSession) -> Optional[User]:
+    """Get current user from JWT token."""
     payload = verify_token(token, token_type="access")
-
     if payload is None:
         return None
 
@@ -153,31 +157,26 @@ async def get_current_user(
         return None
 
     try:
-        # Get user from database
         stmt = select(User).where(User.id == user_id)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
 
         if user is None:
-            logger.warning(f"User not found: {user_id}")
+            logger.warning("User not found: %s", user_id)
             return None
 
         if user.is_banned:
-            logger.warning(f"Banned user attempting to authenticate: {user_id}")
+            logger.warning("Banned user attempting to authenticate: %s", user_id)
             return None
 
         return user
-    except Exception as e:
-        logger.error(f"Error fetching user {user_id}: {str(e)}")
+    except Exception as exc:
+        logger.error("Error fetching user %s: %s", user_id, exc)
         return None
 
 
-async def authenticate_user(
-    email: str,
-    password: str,
-    session: AsyncSession
-) -> Optional[User]:
-    """Authenticate user with email and password"""
+async def authenticate_user(email: str, password: str, session: AsyncSession) -> Optional[User]:
+    """Authenticate user with email and password."""
     try:
         if not email or not password:
             return None
@@ -187,20 +186,18 @@ async def authenticate_user(
         user = result.scalar_one_or_none()
 
         if user is None:
-            logger.info(f"Login attempt with non-existent email: {email}")
+            logger.info("Login attempt with non-existent email: %s", email)
             return None
 
         if not verify_password(password, user.password_hash):
-            logger.info(f"Failed login attempt for user: {email}")
+            logger.info("Failed login attempt for user: %s", email)
             return None
 
         if user.is_banned:
-            logger.warning(f"Attempt to login as banned user: {email}")
+            logger.warning("Attempt to login as banned user: %s", email)
             return None
 
-        logger.info(f"User authenticated successfully: {email}")
         return user
-    except Exception as e:
-        logger.error(f"Authentication error for {email}: {str(e)}")
+    except Exception as exc:
+        logger.error("Authentication error for %s: %s", email, exc)
         return None
-

@@ -11,8 +11,27 @@ export function AuthPage({ onLogin }: AuthPageProps) {
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const getErrorMessage = (detail: unknown): string => {
+    if (typeof detail === 'string') {
+      return detail;
+    }
+
+    if (Array.isArray(detail) && detail.length > 0) {
+      const first = detail[0] as { msg?: string } | string;
+      if (typeof first === 'string') {
+        return first;
+      }
+      if (first && typeof first.msg === 'string') {
+        return first.msg;
+      }
+    }
+
+    return 'Authentication failed';
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,10 +40,17 @@ export function AuthPage({ onLogin }: AuthPageProps) {
 
     try {
       const endpoint = mode === 'login' ? '/api/v1/login' : '/api/v1/register';
+
+      if (mode === 'register' && password !== confirmPassword) {
+        setError('Passwords do not match');
+        setLoading(false);
+        return;
+      }
+
       const body =
         mode === 'login'
           ? { email, password }
-          : { email, username, password };
+          : { email, username, password, confirm_password: confirmPassword };
 
       const response = await fetch(getApiUrl(endpoint), {
         method: 'POST',
@@ -37,7 +63,7 @@ export function AuthPage({ onLogin }: AuthPageProps) {
       const data = await response.json();
 
       if (!response.ok) {
-        setError(data.detail || 'Authentication failed');
+        setError(getErrorMessage(data.detail));
         setLoading(false);
         return;
       }
@@ -139,6 +165,20 @@ export function AuthPage({ onLogin }: AuthPageProps) {
                 placeholder="••••••••"
               />
             </div>
+
+            {mode === 'register' && (
+              <div>
+                <label className="block text-sm text-gray-700 mb-2">Confirm Password</label>
+                <input
+                  type="password"
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-purple-500 focus:ring-2 focus:ring-purple-200 outline-none transition"
+                  placeholder="••••••••"
+                />
+              </div>
+            )}
 
             {error && (
               <div className="bg-red-50 text-red-600 px-4 py-3 rounded-xl text-sm">

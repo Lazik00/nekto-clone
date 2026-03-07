@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.utils import get_openapi
@@ -45,23 +46,22 @@ app = FastAPI(
 )
 
 # Middleware
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=["*"],
-)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS or ["*"])
 
+allow_all_origins = "*" in settings.CORS_ORIGINS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"] if allow_all_origins else settings.CORS_ORIGINS,
+    allow_credentials=not allow_all_origins,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Create uploads directory if it doesn't exist
 uploads_dir = Path("uploads")
-uploads_dir.mkdir(exist_ok=True)
-(uploads_dir / "avatars").mkdir(exist_ok=True)
+uploads_dir.mkdir(parents=True, exist_ok=True)
+(uploads_dir / "avatars").mkdir(parents=True, exist_ok=True)
 
 # Mount static files for avatars
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
@@ -134,6 +134,6 @@ async def root():
     """Root endpoint"""
     return {
         "message": "Welcome to Nekto Clone API",
-        "docs": "/docs",
+        "docs": "/api/docs",
         "version": "1.0.0"
     }

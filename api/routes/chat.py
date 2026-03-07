@@ -159,12 +159,26 @@ async def websocket_chat(ws: WebSocket, session_id: str):
     try:
         while True:
             raw = await ws.receive_text()
-            msg = json.loads(raw)
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await manager.send(user_id, {"type": "error", "message": "Invalid JSON payload"})
+                continue
+
             msg_type = msg.get("type")
 
             # TEXT MESSAGE
             if msg_type == "chat_message":
-                content = msg.get("content", "")
+                content = (msg.get("content") or "").strip()
+                if not content:
+                    continue
+
+                if len(content) > 5000:
+                    await manager.send(
+                        user_id,
+                        {"type": "error", "message": "Message must be 5000 characters or less"},
+                    )
+                    continue
 
                 async with async_session() as db:
                     new_msg = Message(
@@ -291,17 +305,25 @@ async def get_user_sessions(
     result = await session.execute(stmt)
     sessions = result.scalars().all()
 
+    opponent_ids = {
+        sess.user_id_2 if current_user.id == sess.user_id_1 else sess.user_id_1
+        for sess in sessions
+        if (sess.user_id_2 if current_user.id == sess.user_id_1 else sess.user_id_1)
+    }
+
+    opponents_map = {}
+    if opponent_ids:
+        opponents_result = await session.execute(select(User).where(User.id.in_(opponent_ids)))
+        opponents = opponents_result.scalars().all()
+        opponents_map = {opponent.id: opponent for opponent in opponents}
+
     sessions_data = []
     for sess in sessions:
         opponent_id = (
             sess.user_id_2 if current_user.id == sess.user_id_1 else sess.user_id_1
         )
 
-        opponent = None
-        if opponent_id:
-            opponent_stmt = select(User).where(User.id == opponent_id)
-            opponent_result = await session.execute(opponent_stmt)
-            opponent = opponent_result.scalar_one_or_none()
+        opponent = opponents_map.get(opponent_id) if opponent_id else None
 
         sessions_data.append(
             {

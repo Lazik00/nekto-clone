@@ -12,9 +12,11 @@ export default defineConfig({
     },
   },
   build: {
-    target: 'esnext',
+    target: 'es2018',
     outDir: 'build',
-    minify: false,
+    minify: 'esbuild',
+    cssCodeSplit: true,
+    sourcemap: false,
     rollupOptions: {
       output: {
         manualChunks: {

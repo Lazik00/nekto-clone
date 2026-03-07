@@ -1,246 +1,237 @@
-import aioredis
 import json
 import logging
-from typing import Optional, Dict, List
+import time
 from datetime import datetime, timedelta
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from typing import Dict, Optional
 
-try:
-    import aioredis
-    REDIS_AVAILABLE = True
-except ImportError:
-    REDIS_AVAILABLE = False
-    aioredis = None
+from redis.asyncio import Redis
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
-from ..models import User, ChatSession
+from ..models import ChatSession, User
 
 logger = logging.getLogger(__name__)
 
-# Redis client
-redis_client: Optional[any] = None
+QUEUE_ZSET_KEY = "match_queue"
+QUEUE_PREF_KEY_PREFIX = "match_queue:pref:"
+RATE_LIMIT_KEY_PREFIX = "matches:"
 
-# Fallback in-memory cache for when Redis is unavailable
+redis_client: Optional[Redis] = None
+
+# In-memory fallback when Redis is unavailable
 in_memory_cache: Dict = {
-    "match_queue": {},
+    "match_queue": {},  # user_id -> {joined_at, preferences}
     "rate_limits": {},
-    "sessions": {}
 }
 
 
 async def init_redis() -> None:
-    """Initialize Redis connection with fallback"""
+    """Initialize Redis connection with in-memory fallback."""
     global redis_client
 
-    if not REDIS_AVAILABLE:
-        logger.warning("Redis not available, using in-memory cache")
-        return
-
     try:
-        redis_client = await aioredis.from_url(
+        redis_client = Redis.from_url(
             settings.REDIS_URL,
-            encoding="utf8",
-            decode_responses=True
+            encoding="utf-8",
+            decode_responses=True,
         )
-        # Test connection
         await redis_client.ping()
-        logger.info("✅ Redis connected successfully")
-    except Exception as e:
-        logger.warning(f"⚠️ Redis connection failed: {str(e)}")
-        logger.warning("Falling back to in-memory cache")
+        logger.info("Redis connected successfully")
+    except Exception as exc:
+        logger.warning("Redis connection failed: %s", exc)
+        logger.warning("Falling back to in-memory queue")
         redis_client = None
 
 
 async def close_redis() -> None:
-    """Close Redis connection"""
+    """Close Redis connection."""
     global redis_client
     if redis_client:
         try:
-            await redis_client.close()
+            await redis_client.aclose()
             logger.info("Redis disconnected")
-        except Exception as e:
-            logger.warning(f"Error closing Redis: {str(e)}")
+        except Exception as exc:
+            logger.warning("Error closing Redis: %s", exc)
         finally:
             redis_client = None
 
 
-async def get_redis() -> Optional[any]:
-    """Get Redis client"""
+async def get_redis() -> Optional[Redis]:
     return redis_client
 
 
+def _cleanup_in_memory_queue() -> None:
+    now = time.time()
+    timeout = settings.MATCH_TIMEOUT_SECONDS
+
+    expired_user_ids = [
+        user_id
+        for user_id, item in in_memory_cache["match_queue"].items()
+        if now - item["joined_at"] > timeout
+    ]
+
+    for user_id in expired_user_ids:
+        in_memory_cache["match_queue"].pop(user_id, None)
+
+
+async def _cleanup_redis_queue(redis: Redis) -> None:
+    stale_before = time.time() - settings.MATCH_TIMEOUT_SECONDS
+    try:
+        await redis.zremrangebyscore(QUEUE_ZSET_KEY, 0, stale_before)
+    except Exception as exc:
+        logger.error("Redis cleanup error: %s", exc)
+
+
+async def _get_user_preferences(user_id: str, redis: Optional[Redis]) -> Dict:
+    if redis:
+        try:
+            raw = await redis.get(f"{QUEUE_PREF_KEY_PREFIX}{user_id}")
+            if not raw:
+                return {}
+            return json.loads(raw)
+        except Exception as exc:
+            logger.error("Redis preference read error: %s", exc)
+            return {}
+
+    return in_memory_cache["match_queue"].get(user_id, {}).get("preferences", {})
+
+
 async def add_to_queue(user_id: str, preferences: Optional[Dict] = None) -> None:
-    """Add user to matchmaking queue"""
-    queue_key = "match_queue"
-
-    user_data = {
-        "user_id": user_id,
-        "joined_at": datetime.utcnow().isoformat(),
-        "preferences": preferences or {},
-    }
-
+    """Add user to matchmaking queue."""
+    joined_at = time.time()
+    payload = preferences or {}
     redis = await get_redis()
 
     if redis:
         try:
-            await redis.zadd(
-                queue_key,
-                {json.dumps(user_data): datetime.utcnow().timestamp()}
+            pipe = redis.pipeline()
+            pipe.zadd(QUEUE_ZSET_KEY, {user_id: joined_at})
+            pipe.setex(
+                f"{QUEUE_PREF_KEY_PREFIX}{user_id}",
+                settings.MATCH_TIMEOUT_SECONDS,
+                json.dumps(payload),
             )
-            await redis.expire(queue_key, settings.MATCH_TIMEOUT_SECONDS)
-        except Exception as e:
-            logger.error(f"Redis error adding to queue: {str(e)}")
-            # Fallback to in-memory
-            in_memory_cache[queue_key][user_id] = user_data
-    else:
-        # Use in-memory cache
-        in_memory_cache[queue_key][user_id] = user_data
+            await pipe.execute()
+            return
+        except Exception as exc:
+            logger.error("Redis error adding queue item: %s", exc)
+
+    in_memory_cache["match_queue"][user_id] = {
+        "joined_at": joined_at,
+        "preferences": payload,
+    }
 
 
 async def remove_from_queue(user_id: str) -> None:
-    """Remove user from matchmaking queue"""
-    queue_key = "match_queue"
+    """Remove user from matchmaking queue."""
     redis = await get_redis()
 
     if redis:
         try:
-            members = await redis.zrange(queue_key, 0, -1)
-            for member in members:
-                data = json.loads(member)
-                if data["user_id"] == user_id:
-                    await redis.zrem(queue_key, member)
-                    break
-        except Exception as e:
-            logger.error(f"Redis error removing from queue: {str(e)}")
-            if user_id in in_memory_cache[queue_key]:
-                del in_memory_cache[queue_key][user_id]
-    else:
-        # Use in-memory cache
-        if user_id in in_memory_cache[queue_key]:
-            del in_memory_cache[queue_key][user_id]
+            pipe = redis.pipeline()
+            pipe.zrem(QUEUE_ZSET_KEY, user_id)
+            pipe.delete(f"{QUEUE_PREF_KEY_PREFIX}{user_id}")
+            await pipe.execute()
+        except Exception as exc:
+            logger.error("Redis error removing queue item: %s", exc)
+
+    in_memory_cache["match_queue"].pop(user_id, None)
 
 
 async def get_queue_position(user_id: str) -> int:
-    """Get user's position in matchmaking queue"""
-    queue_key = "match_queue"
+    """Get user's queue position (1-based)."""
     redis = await get_redis()
 
     if redis:
         try:
-            members = await redis.zrange(queue_key, 0, -1)
-            for idx, member in enumerate(members):
-                data = json.loads(member)
-                if data["user_id"] == user_id:
-                    return idx
-        except Exception as e:
-            logger.error(f"Redis error getting queue position: {str(e)}")
-            # Fallback to in-memory
-            for idx, uid in enumerate(in_memory_cache[queue_key].keys()):
-                if uid == user_id:
-                    return idx
-    else:
-        # Use in-memory cache
-        for idx, uid in enumerate(in_memory_cache[queue_key].keys()):
-            if uid == user_id:
-                return idx
+            await _cleanup_redis_queue(redis)
+            rank = await redis.zrank(QUEUE_ZSET_KEY, user_id)
+            return -1 if rank is None else int(rank) + 1
+        except Exception as exc:
+            logger.error("Redis error getting queue position: %s", exc)
+
+    _cleanup_in_memory_queue()
+    for index, queued_user_id in enumerate(in_memory_cache["match_queue"].keys(), start=1):
+        if queued_user_id == user_id:
+            return index
 
     return -1
 
+
 async def is_user_in_queue(user_id: str) -> bool:
-    """
-    Check whether the user is currently in the matchmaking queue.
-    Works with both Redis and in-memory fallback.
-    """
-    queue_key = "match_queue"
     redis = await get_redis()
 
-    # --- Redis mode ---
     if redis:
         try:
-            members = await redis.zrange(queue_key, 0, -1)
-            for member in members:
-                data = json.loads(member)
-                if data["user_id"] == user_id:
-                    return True
-            return False
-        except Exception as e:
-            logger.error(f"Redis error in is_user_in_queue: {str(e)}")
+            await _cleanup_redis_queue(redis)
+            return await redis.zscore(QUEUE_ZSET_KEY, user_id) is not None
+        except Exception as exc:
+            logger.error("Redis error checking queue membership: %s", exc)
 
-    # --- In-Memory fallback ---
-    return user_id in in_memory_cache[queue_key]
+    _cleanup_in_memory_queue()
+    return user_id in in_memory_cache["match_queue"]
 
 
 async def find_match(
     user_id: str,
     session: AsyncSession,
-    preferences: Optional[Dict] = None
+    preferences: Optional[Dict] = None,
 ) -> Optional[str]:
-    """
-    Find a match for user from queue
-    Returns matched user_id or None
-    """
-    queue_key = "match_queue"
+    """Find a compatible user from queue and return matched user_id."""
     redis = await get_redis()
-    members = []
 
     if redis:
         try:
-            members = await redis.zrange(queue_key, 0, -1)
-        except Exception as e:
-            logger.error(f"Redis error in find_match: {str(e)}")
-            members = list(in_memory_cache[queue_key].values())
+            await _cleanup_redis_queue(redis)
+            candidate_ids = await redis.zrange(QUEUE_ZSET_KEY, 0, -1)
+        except Exception as exc:
+            logger.error("Redis error in find_match: %s", exc)
+            _cleanup_in_memory_queue()
+            candidate_ids = list(in_memory_cache["match_queue"].keys())
     else:
-        members = list(in_memory_cache[queue_key].values())
+        _cleanup_in_memory_queue()
+        candidate_ids = list(in_memory_cache["match_queue"].keys())
 
-    logger.debug(f"find_match: Looking for match for {user_id}, queue size: {len(members)}")
+    logger.debug("find_match queue size=%s user=%s", len(candidate_ids), user_id)
 
-    for member in members:
-        if isinstance(member, str):
-            data = json.loads(member)
-        else:
-            data = member
-
-        candidate_id = data["user_id"]
-
-        # Don't match with self
+    for candidate_id in candidate_ids:
         if candidate_id == user_id:
             continue
 
-        # Check if users are blocked
         if await is_blocked(user_id, candidate_id, session):
-            logger.debug(f"Users {user_id} and {candidate_id} are blocked")
             continue
 
-        # Check preferences
-        if preferences:
-            if not await check_preferences(candidate_id, preferences, session):
-                logger.debug(f"Preferences mismatch between {user_id} and {candidate_id}")
-                continue
+        # Requesting user's filters must match candidate
+        if preferences and not await check_preferences(candidate_id, preferences, session):
+            continue
 
-        # Found a match!
-        logger.info(f"Match found: {user_id} <-> {candidate_id}")
+        # Candidate user's own filters should also match requester
+        candidate_preferences = await _get_user_preferences(candidate_id, redis)
+        if candidate_preferences and not await check_preferences(user_id, candidate_preferences, session):
+            continue
+
         await remove_from_queue(user_id)
         await remove_from_queue(candidate_id)
-
+        logger.info("Match found: %s <-> %s", user_id, candidate_id)
         return candidate_id
 
-    logger.debug(f"No match found for {user_id}, keeping in queue")
     return None
 
 
 async def is_blocked(user_id_1: str, user_id_2: str, session: AsyncSession) -> bool:
-    """Check if users have blocked each other"""
+    """Check if users have blocked each other."""
     from ..models import BlockedUser
 
     stmt = select(BlockedUser).where(
         (
-            (BlockedUser.blocker_user_id == user_id_1) &
-            (BlockedUser.blocked_user_id == user_id_2)
-        ) |
+            (BlockedUser.blocker_user_id == user_id_1)
+            & (BlockedUser.blocked_user_id == user_id_2)
+        )
+        |
         (
-            (BlockedUser.blocker_user_id == user_id_2) &
-            (BlockedUser.blocked_user_id == user_id_1)
+            (BlockedUser.blocker_user_id == user_id_2)
+            & (BlockedUser.blocked_user_id == user_id_1)
         )
     )
 
@@ -248,12 +239,11 @@ async def is_blocked(user_id_1: str, user_id_2: str, session: AsyncSession) -> b
     return result.scalar_one_or_none() is not None
 
 
-async def check_preferences(
-    user_id: str,
-    preferences: Dict,
-    session: AsyncSession
-) -> bool:
-    """Check if user matches preferences"""
+async def check_preferences(user_id: str, preferences: Dict, session: AsyncSession) -> bool:
+    """Check whether target user satisfies filters."""
+    if not preferences:
+        return True
+
     stmt = select(User).where(User.id == user_id)
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
@@ -261,42 +251,32 @@ async def check_preferences(
     if user is None:
         return False
 
-    # Check gender preference
-    if "gender_preference" in preferences and preferences["gender_preference"]:
-        if user.gender != preferences["gender_preference"]:
-            return False
-
-    # Check age range
-    if "age_min" in preferences and user.age and user.age < preferences["age_min"]:
+    gender_pref = preferences.get("gender_preference")
+    if gender_pref and user.gender != gender_pref:
         return False
 
-    if "age_max" in preferences and user.age and user.age > preferences["age_max"]:
+    age_min = preferences.get("age_min")
+    if age_min is not None and user.age is not None and user.age < int(age_min):
         return False
 
-    # Check country preference
-    if "country_preference" in preferences and preferences["country_preference"]:
-        if user.country != preferences["country_preference"]:
-            return False
+    age_max = preferences.get("age_max")
+    if age_max is not None and user.age is not None and user.age > int(age_max):
+        return False
+
+    country_pref = preferences.get("country_preference")
+    if country_pref and user.country != country_pref:
+        return False
 
     return True
 
 
-async def store_match(
-    caller_id: str,
-    callee_id: str,
-    db: AsyncSession
-) -> ChatSession:
-    """
-    ALWAYS:
-        user_id_1 = caller (the one who pressed /find)
-        user_id_2 = callee (the matched user)
-    """
-
+async def store_match(caller_id: str, callee_id: str, db: AsyncSession) -> ChatSession:
+    """Create chat session for matched users."""
     chat_session = ChatSession(
-        user_id_1=caller_id,   # ALWAYS CALLER
-        user_id_2=callee_id,   # ALWAYS CALLEE
+        user_id_1=caller_id,
+        user_id_2=callee_id,
         status="active",
-        started_at=datetime.utcnow()
+        started_at=datetime.utcnow(),
     )
 
     db.add(chat_session)
@@ -304,19 +284,17 @@ async def store_match(
     await db.refresh(chat_session)
 
     logger.info(
-        f"[STORE MATCH] Chat session created: {chat_session.id} | caller={caller_id} → callee={callee_id}"
+        "[STORE MATCH] session=%s caller=%s callee=%s",
+        chat_session.id,
+        caller_id,
+        callee_id,
     )
-
     return chat_session
 
 
-
 async def rate_limit_check(user_id: str) -> bool:
-    """
-    Check if user has exceeded rate limit for matches
-    Returns True if allowed, False if rate limited
-    """
-    key = f"matches:{user_id}"
+    """Rate-limit matchmaking attempts per user per hour."""
+    key = f"{RATE_LIMIT_KEY_PREFIX}{user_id}"
     redis = await get_redis()
 
     if redis:
@@ -325,38 +303,18 @@ async def rate_limit_check(user_id: str) -> bool:
             if count == 1:
                 await redis.expire(key, 3600)
             return count <= settings.MAX_MATCHES_PER_HOUR
-        except Exception as e:
-            logger.error(f"Redis rate limit error: {str(e)}")
-            # Fallback to in-memory
-            if key not in in_memory_cache["rate_limits"]:
-                in_memory_cache["rate_limits"][key] = {
-                    "count": 1,
-                    "expires_at": datetime.utcnow() + timedelta(hours=1)
-                }
-            else:
-                cache_entry = in_memory_cache["rate_limits"][key]
-                if cache_entry["expires_at"] > datetime.utcnow():
-                    cache_entry["count"] += 1
-                else:
-                    cache_entry["count"] = 1
-                    cache_entry["expires_at"] = datetime.utcnow() + timedelta(hours=1)
+        except Exception as exc:
+            logger.error("Redis rate limit error: %s", exc)
 
-            return in_memory_cache["rate_limits"][key]["count"] <= settings.MAX_MATCHES_PER_HOUR
+    cache_entry = in_memory_cache["rate_limits"].get(key)
+    now = datetime.utcnow()
+
+    if not cache_entry or cache_entry["expires_at"] <= now:
+        in_memory_cache["rate_limits"][key] = {
+            "count": 1,
+            "expires_at": now + timedelta(hours=1),
+        }
     else:
-        # Use in-memory cache
-        if key not in in_memory_cache["rate_limits"]:
-            in_memory_cache["rate_limits"][key] = {
-                "count": 1,
-                "expires_at": datetime.utcnow() + timedelta(hours=1)
-            }
-        else:
-            cache_entry = in_memory_cache["rate_limits"][key]
-            if cache_entry["expires_at"] > datetime.utcnow():
-                cache_entry["count"] += 1
-            else:
-                cache_entry["count"] = 1
-                cache_entry["expires_at"] = datetime.utcnow() + timedelta(hours=1)
+        cache_entry["count"] += 1
 
-        return in_memory_cache["rate_limits"][key]["count"] <= settings.MAX_MATCHES_PER_HOUR
-
-
+    return in_memory_cache["rate_limits"][key]["count"] <= settings.MAX_MATCHES_PER_HOUR

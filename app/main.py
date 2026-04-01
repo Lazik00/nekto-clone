@@ -65,10 +65,10 @@ uploads_dir.mkdir(parents=True, exist_ok=True)
 
 # Mount static files for avatars
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-app.include_router(auth.router, prefix=settings.API_V1_PREFIX, tags=["Authentication"])
-app.include_router(match.router, prefix=settings.API_V1_PREFIX, tags=["Matchmaking"])
-app.include_router(chat.router, prefix=settings.API_V1_PREFIX, tags=["Chat"])
-app.include_router(reports.router, prefix=settings.API_V1_PREFIX, tags=["Reports"])
+app.include_router(auth.router, prefix=f"{settings.API_V1_PREFIX}/auth", tags=["Authentication"])
+app.include_router(match.router, prefix=f"{settings.API_V1_PREFIX}/match", tags=["Matchmaking"])
+app.include_router(chat.router, prefix=f"{settings.API_V1_PREFIX}/chat", tags=["Chat"])
+app.include_router(reports.router, prefix=f"{settings.API_V1_PREFIX}/reports", tags=["Reports"])
 
 # Configure Swagger UI with Bearer token support
 def custom_openapi():

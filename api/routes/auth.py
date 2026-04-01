@@ -192,7 +192,7 @@ async def update_profile(
     session: AsyncSession = Depends(get_db),
     display_name: str = Form(None),
     bio: str = Form(None),
-    age: int = Form(None),
+    age: str = Form(None),
     gender: str = Form(None),
     country: str = Form(None),
     avatar: UploadFile = File(None),
@@ -204,20 +204,47 @@ async def update_profile(
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
     # Update fields - only non-null values
-    if display_name:
-        current_user.display_name = display_name
+    if display_name is not None:
+        normalized_display_name = display_name.strip()
+        current_user.display_name = normalized_display_name or current_user.username
 
     if bio is not None:
-        current_user.bio = bio
+        normalized_bio = bio.strip()
+        current_user.bio = normalized_bio or None
 
-    if age:
-        current_user.age = age
+    if age is not None:
+        normalized_age = age.strip()
+        if not normalized_age:
+            current_user.age = None
+        else:
+            try:
+                age_value = int(normalized_age)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Age must be a valid number",
+                ) from exc
 
-    if gender:
-        current_user.gender = gender
+            if age_value < 13 or age_value > 120:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Age must be between 13 and 120",
+                )
 
-    if country:
-        current_user.country = country
+            current_user.age = age_value
+
+    if gender is not None:
+        normalized_gender = gender.strip().lower()
+        if normalized_gender and normalized_gender not in {"male", "female", "other"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Gender must be one of: male, female, other",
+            )
+        current_user.gender = normalized_gender or None
+
+    if country is not None:
+        normalized_country = country.strip()
+        current_user.country = normalized_country or None
 
     # Handle file upload
     if avatar:
@@ -322,4 +349,3 @@ async def get_user(
         )
 
     return user
-

@@ -73,7 +73,7 @@ manager = ConnectionManager()
 #   WEBSOCKET ROUTE
 # ==========================================
 
-@router.websocket("/chat/ws/{session_id}")
+@router.websocket("/ws/{session_id}")
 async def websocket_chat(ws: WebSocket, session_id: str):
 
     # 1) TOKEN VALIDATION

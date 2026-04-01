@@ -25,4 +25,4 @@ USER appuser
 
 EXPOSE 8077
 
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "4", "-b", "0.0.0.0:8077", "app.main:app"]
+CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker -w ${WORKERS:-1} -b 0.0.0.0:8077 app.main:app"]

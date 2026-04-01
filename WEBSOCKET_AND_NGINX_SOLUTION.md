@@ -48,7 +48,7 @@ WebSocket connection to 'wss://192.168.13.118:8443/api/v1/chat/ws/...' failed
 ### Modified Files
 | File | Change |
 |------|--------|
-| `Design Matchmaking App/src/config/api.ts` | Fixed WebSocket URL generation |
+| `frontend/src/services/api.ts` | Fixed WebSocket URL generation |
 
 ### New Configuration Files
 | File | Purpose |
@@ -84,10 +84,10 @@ sudo certbot --nginx -d badgatewaydev.tech
 sudo systemctl restart nginx
 
 # 5. Run backend
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 4 &
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 &
 
 # 6. Build frontend
-cd "Design Matchmaking App"
+cd frontend
 npm run build
 
 # 7. Visit https://badgatewaydev.tech
@@ -103,13 +103,13 @@ ngrok http 8000
 # Copy URL: https://xxx-xxx-xxx.ngrok.io
 
 # Terminal 3: Frontend
-cd "Design Matchmaking App"
-echo "VITE_API_URL=https://xxx-xxx-xxx.ngrok.io" > .env.local
-echo "VITE_WS_URL=wss://xxx-xxx-xxx.ngrok.io" >> .env.local
+cd frontend
+echo "VITE_API_BASE=https://xxx-xxx-xxx.ngrok.io" > .env.local
+echo "VITE_WS_BASE=wss://xxx-xxx-xxx.ngrok.io" >> .env.local
 npm install
 npm run dev
 
-# Visit http://localhost:5174
+# Visit http://localhost:5173
 ```
 
 ---
@@ -164,8 +164,8 @@ Expected result: `✅ Connected`
 3. For development: Use ngrok instead
 
 ### "404 Not Found on frontend"
-1. Check dist folder: `ls -la "Design Matchmaking App/dist/"`
-2. Rebuild if needed: `cd "Design Matchmaking App" && npm run build`
+1. Check dist folder: `ls -la "frontend/dist/"`
+2. Rebuild if needed: `cd frontend && npm run build`
 
 ### "Token verification failed"
 1. Log in again to get new token
@@ -303,7 +303,7 @@ If you encounter issues:
 
 ```
 Project Root/
-├── Design Matchmaking App/
+├── frontend/
 │   └── src/config/
 │       └── api.ts ✅ FIXED
 ├── app/
@@ -357,4 +357,3 @@ Your deployment is successful when:
 **Happy coding! 🚀**
 
 For the quickest path, start with [WEBSOCKET_FIX_QUICK_ACTION.md](WEBSOCKET_FIX_QUICK_ACTION.md)
-

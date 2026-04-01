@@ -37,7 +37,8 @@ services:
       USE_SQLITE: "False"
       POSTGRES_HOST: db
       REDIS_HOST: redis
-      CORS_ORIGINS: '["http://localhost:8080", "http://127.0.0.1:8080"]'
+      WORKERS: "1"
+      CORS_ORIGINS: '["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8080", "http://127.0.0.1:8080"]'
       ALLOWED_HOSTS: '["*"]'
     depends_on:
       db:
@@ -48,7 +49,7 @@ services:
       - uploads_data:/app/uploads
       - logs_data:/app/logs
     ports:
-      - "8000:8000"
+      - "8000:8077"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8077/health', timeout=3)"]
       interval: 20s
@@ -58,7 +59,7 @@ services:
 
   frontend:
     build:
-      context: ./Design Matchmaking App
+      context: ./frontend
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:

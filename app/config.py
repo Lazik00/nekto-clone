@@ -62,7 +62,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8080",
     ]
     ALLOWED_HOSTS: List[str] = ["localhost", "127.0.0.1", "backend", "frontend"]
-    WORKERS: int = 4
+    WORKERS: int = 1
 
     # Matchmaking
     MATCH_TIMEOUT_SECONDS: int = 120
